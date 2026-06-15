@@ -1,0 +1,67 @@
+Reconciliation Module - Simple Summary
+What is Reconciliation?
+Reconciliation is comparing what ISCOOA says an operator owes versus what the operator actually paid. It finds differences (gaps) so the Treasurer can investigate and fix them.
+
+The Three Statuses
+Status	Meaning
+MATCH	ISCOOA and operator agree. Everything is correct.
+UNVERIFIED	Operator paid, but ISCOOA hasn't confirmed yet.
+GAP	There is a difference. Something is wrong.
+How It Works (The Two Steps)
+Step	Action	What it does
+1	POST /reconciliation/run/	COOK - Calculates differences and SAVES to database
+2	GET /reconciliation/ledger/	EAT - Views the saved records
+You cannot view before you run. Nothing exists to see.
+
+The Golden Rule
+RUN once per period. VIEW as many times as you want.
+
+Period	Action
+May 2026 (never ran)	Must RUN first, then VIEW
+May 2026 (already ran yesterday)	Just VIEW. No need to run again
+June 2026 (never ran)	Must RUN first, then VIEW
+What "Idempotent" Means
+Running reconciliation for the same period multiple times does NOT create duplicate records.
+
+Run #	Result
+1st run	Creates records
+2nd run	Updates same records (no duplicates)
+3rd run	Updates same records (no duplicates)
+Safe to run again if new bills or payments were added.
+
+Why Reconciliation Exists
+Problem	Solution
+Operator says "I paid" but ISCOOA disagrees	GAP shows who is right
+Operator overpaid	Negative variance - ISCOOA owes refund
+Operator underpaid	Positive variance - operator still owes
+External payments not linked	Reconciliation connects them to bills
+Who Can Use It
+Role	Permission
+Treasurer	✅ Full access (run, view, manually fix)
+Operator	❌ No access
+Other ISCOOA Exec	❌ No access
+The Complete Workflow
+text
+1. Treasurer logs in
+        ↓
+2. POST /reconciliation/run/   ← COOK (create records)
+   {"billing_period": "2026-05"}
+        ↓
+3. GET /reconciliation/ledger/  ← VIEW results
+        ↓
+4. Find GAP records
+        ↓
+5. POST /reconciliation/ledger/<id>/reconcile/  ← MANUALLY FIX
+   {"match_status": "match", "notes": "Verified"}
+        ↓
+6. POST /reconciliation/run/   ← RE-RUN to refresh summary
+        ↓
+7. GET /reconciliation/periods/  ← VIEW updated summary
+Simple Analogy
+Reconciliation	Cooking Food
+POST /run/	Cook the meal (takes time)
+GET /ledger/	Eat the meal (fast, many times)
+Idempotent	Cooking twice = still one pot of rice (not two)
+Never ran	No food to eat (empty result)
+One Sentence Summary
+Run reconciliation once to create records for a period, then view them anytime without running again.
