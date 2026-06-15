@@ -1,23 +1,33 @@
 #!/bin/bash
 
-# Exit on error
 set -o errexit
 
-# Install dependencies
 pip install -r requirements.txt
-
-# Collect static files
 python manage.py collectstatic --noinput
-
-# Run migrations
 python manage.py migrate
 
-# Create superuser automatically if environment variables are set
-if [[ -n "$DJANGO_SUPERUSER_USERNAME" ]] && [[ -n "$DJANGO_SUPERUSER_PASSWORD" ]]; then
-    echo "Creating superuser..."
-    python manage.py createsuperuser --no-input \
-        --username "$DJANGO_SUPERUSER_USERNAME" \
-        --email "$DJANGO_SUPERUSER_EMAIL" 2>/dev/null || echo "Superuser already exists or creation failed"
-fi
+# Create superuser - works with email-based User models
+echo "Checking for existing superuser..."
+python manage.py shell <<EOF
+from django.contrib.auth import get_user_model
+User = get_user_model()
 
-echo "Build completed successfully!"
+email = "$DJANGO_SUPERUSER_EMAIL"
+password = "$DJANGO_SUPERUSER_PASSWORD"
+username = "$DJANGO_SUPERUSER_USERNAME"
+
+if email and password:
+    if not User.objects.filter(email=email).exists():
+        User.objects.create_superuser(
+            username=username,
+            email=email,
+            password=password
+        )
+        print(f"✅ Superuser created: {email}")
+    else:
+        print(f"✅ Superuser already exists: {email}")
+else:
+    print("⚠️  Superuser environment variables not set")
+EOF
+
+echo "Build completed!"
