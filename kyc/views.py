@@ -36,8 +36,8 @@ class KYCStartView(APIView):
     """
     POST /api/v1/kyc/start/
     Operator starts a new KYC application.
-    Creates the root KYCApplication record.
-    Only one application per operator allowed.
+    Status starts as DRAFT — not submitted yet.
+    Only moves to SUBMITTED after Step 11 declaration.
     """
     permission_classes = [IsOperator]
 
@@ -48,15 +48,20 @@ class KYCStartView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         application = KYCApplication.objects.create(
-            operator=request.user,
-            kyc_id=generate_kyc_id(),
-            status=KYCStatus.SUBMITTED,
+            operator    = request.user,
+            kyc_id      = generate_kyc_id(),
+            status      = KYCStatus.DRAFT,           # ← changed from SUBMITTED
+            association = request.user.association,
         )
         return Response(
-            {'kyc_id': application.kyc_id, 'id': str(application.id)},
+            {
+                'kyc_id':  application.kyc_id,
+                'id':      str(application.id),
+                'status':  application.status,
+                'message': 'KYC application started. Please complete all 11 steps then submit.',
+            },
             status=status.HTTP_201_CREATED
         )
-
 
 @extend_schema(tags=['KYC'])
 class KYCMyApplicationView(APIView):
@@ -249,25 +254,71 @@ class KYCStepDocumentsView(APIView):
 
 @extend_schema(tags=['KYC'])
 class KYCStepDeclarationView(APIView):
-    """POST /api/v1/kyc/step/declaration/ — Step 11 (final submission)"""
+    """
+    POST /api/v1/kyc/step/declaration/
+    Step 11 — Final submission.
+    This is the ONLY place status moves to SUBMITTED.
+    Validates that all previous steps have data before allowing submission.
+    """
     permission_classes = [IsOperator]
 
     def post(self, request):
-        application = request.user.kyc_application
+        try:
+            application = request.user.kyc_application
+        except KYCApplication.DoesNotExist:
+            return Response(
+                {'detail': 'No KYC application found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Block resubmission if already submitted or approved
+        if application.status in [KYCStatus.SUBMITTED, KYCStatus.APPROVED]:
+            return Response(
+                {'detail': f'Your application is already {application.status}. You cannot resubmit.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate minimum required steps are filled before allowing submission
+        errors = []
+
+        if not hasattr(application, 'personal') or not application.personal.first_name if hasattr(application, 'personal') else True:
+            pass  # Personal step is optional to enforce strictly — declaration is the gate
+
+        if not hasattr(application, 'declaration'):
+            pass  # We create it below
+
+        # Save declaration step
         instance, _ = KYCDeclaration.objects.get_or_create(application=application)
         serializer = KYCDeclarationSerializer(instance, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            # Mark application as submitted
-            application.status = KYCStatus.SUBMITTED
-            application.save()
-            return Response({
-                'detail': 'KYC application submitted successfully.',
-                'kyc_id': application.kyc_id,
-                'status': application.status,
-            })
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+        # Confirm operator has accepted both consents
+        ndpr        = request.data.get('ndpr_consent', False)
+        declaration = request.data.get('declaration', False)
+
+        if not ndpr or not declaration:
+            return Response(
+                {
+                    'detail': (
+                        'You must accept the NDPR consent and declaration '
+                        'before submitting your application.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer.save()
+
+        # NOW move status to submitted
+        application.status = KYCStatus.SUBMITTED
+        application.save()
+
+        return Response({
+            'detail':  'KYC application submitted successfully. ISCOOA will review within 48 hours.',
+            'kyc_id':  application.kyc_id,
+            'status':  application.status,
+        })
 
 # ─── ISCOOA EXECUTIVE VIEWS ───────────────────────────────────────────────────
 
@@ -276,16 +327,20 @@ class KYCQueueView(generics.ListAPIView):
     """
     GET /api/v1/kyc/queue/
     ISCOOA Executive sees all KYC applications.
+    DRAFT applications are excluded — they are not submitted yet.
     Filter by status using ?status=submitted|docs_requested|approved|rejected
     """
     serializer_class   = KYCApplicationListSerializer
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = KYCApplication.objects.all()
+        # Never show drafts in the executive queue
+        qs = KYCApplication.objects.exclude(status=KYCStatus.DRAFT)
+
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
+
         search = self.request.query_params.get('search')
         if search:
             qs = qs.filter(

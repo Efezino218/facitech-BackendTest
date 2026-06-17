@@ -4,6 +4,7 @@ from accounts.models import User
 
 
 class KYCStatus(models.TextChoices):
+    DRAFT           = 'draft',           'Draft'
     SUBMITTED       = 'submitted',       'Submitted'
     DOCS_REQUESTED  = 'docs_requested',  'Documents Requested'
     APPROVED        = 'approved',        'Approved'

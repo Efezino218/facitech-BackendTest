@@ -34,6 +34,8 @@ def check_upload_allowed(application):
     """
     Returns None if upload is allowed.
     Returns a Response object if upload should be blocked.
+    Allowed statuses: draft, submitted, docs_requested, rejected
+    Blocked status: approved
     """
     if application.status == 'approved':
         return Response(
