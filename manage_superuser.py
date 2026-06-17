@@ -1,17 +1,28 @@
 import os
+import sys
 import django
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
-django.setup()
+# Add the current directory to Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from django.contrib.auth import get_user_model
-User = get_user_model()
-
-email = os.getenv('SUPERUSER_EMAIL', 'superadmin@iscooa.com')
-password = os.getenv('SUPERUSER_PASSWORD', 'SuperSecurePass123!')
-username = os.getenv('SUPERUSER_USERNAME', 'superadmin')
+print("=== STARTING SUPERUSER CREATION ===")
+print(f"Current directory: {os.getcwd()}")
+print(f"Files in directory: {os.listdir('.')}")
 
 try:
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+    django.setup()
+    print("✅ Django setup complete.")
+    
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    
+    email = "superadmin@iscooa.com"
+    password = "SuperSecurePass123!"
+    username = "superadmin"
+    
+    print(f"Creating/updating: {email}")
+    
     user, created = User.objects.get_or_create(
         email=email,
         defaults={
@@ -32,8 +43,13 @@ try:
     user.set_password(password)
     user.save()
     
-    print(f"✅ Superuser {'created' if created else 'updated'}: {email}")
-    print(f"✅ Password: {password}")
-    print(f"✅ Login with: {email}")
+    print(f"✅ SUCCESS: Superuser {'created' if created else 'updated'}")
+    print(f"   Email: {email}")
+    print(f"   Password: {password}")
+    
 except Exception as e:
-    print(f"❌ Error: {e}")
+    print(f"❌ ERROR: {e}")
+    import traceback
+    traceback.print_exc()
+
+print("=== SUPERUSER CREATION COMPLETE ===")
