@@ -258,7 +258,6 @@ class KYCStepDeclarationView(APIView):
     POST /api/v1/kyc/step/declaration/
     Step 11 — Final submission.
     This is the ONLY place status moves to SUBMITTED.
-    Validates that all previous steps have data before allowing submission.
     """
     permission_classes = [IsOperator]
 
@@ -278,22 +277,7 @@ class KYCStepDeclarationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Validate minimum required steps are filled before allowing submission
-        errors = []
-
-        if not hasattr(application, 'personal') or not application.personal.first_name if hasattr(application, 'personal') else True:
-            pass  # Personal step is optional to enforce strictly — declaration is the gate
-
-        if not hasattr(application, 'declaration'):
-            pass  # We create it below
-
-        # Save declaration step
-        instance, _ = KYCDeclaration.objects.get_or_create(application=application)
-        serializer = KYCDeclarationSerializer(instance, data=request.data, partial=True)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        # Confirm operator has accepted both consents
+        # Confirm operator has accepted both consents before anything else
         ndpr        = request.data.get('ndpr_consent', False)
         declaration = request.data.get('declaration', False)
 
@@ -308,6 +292,12 @@ class KYCStepDeclarationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Save declaration step
+        instance, _ = KYCDeclaration.objects.get_or_create(application=application)
+        serializer  = KYCDeclarationSerializer(instance, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
         serializer.save()
 
         # NOW move status to submitted
@@ -319,7 +309,6 @@ class KYCStepDeclarationView(APIView):
             'kyc_id':  application.kyc_id,
             'status':  application.status,
         })
-
 # ─── ISCOOA EXECUTIVE VIEWS ───────────────────────────────────────────────────
 
 @extend_schema(tags=['KYC'])
