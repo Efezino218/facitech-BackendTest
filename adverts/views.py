@@ -90,7 +90,8 @@ class MyAdvertDetailView(generics.RetrieveDestroyAPIView):
 class MarketplaceView(generics.ListAPIView):
     """
     GET /api/v1/adverts/marketplace/
-    All approved live adverts visible to all operators.
+    Approved live adverts visible to operators in the
+    SAME association only.
     Filter by ?category=promo|new_stock|vacancy|services
     """
     serializer_class   = AdvertListSerializer
@@ -98,14 +99,10 @@ class MarketplaceView(generics.ListAPIView):
 
     def get_queryset(self):
         qs = Advert.objects.filter(
-            status  = Advert.Status.APPROVED,
-            is_live = True,
+            status                 = Advert.Status.APPROVED,
+            is_live                = True,
+            operator__association  = self.request.user.association,
         )
-        category = self.request.query_params.get('category')
-        if category:
-            qs = qs.filter(category=category)
-        return qs
-
 
 # ─── SECRETARY GENERAL ADVERT VIEWS ──────────────────────────────────────────
 
@@ -120,7 +117,9 @@ class AdvertQueueView(generics.ListAPIView):
     permission_classes = [IsSecretaryGeneral]
 
     def get_queryset(self):
-        qs = Advert.objects.all()
+        qs = Advert.objects.filter(
+            operator__association = self.request.user.association
+        )
         advert_status = self.request.query_params.get('status')
         if advert_status:
             qs = qs.filter(status=advert_status)
@@ -131,11 +130,16 @@ class AdvertQueueView(generics.ListAPIView):
 class AdvertDetailAdminView(generics.RetrieveAPIView):
     """
     GET /api/v1/adverts/queue/<id>/
-    Secretary General views full advert detail.
+    Secretary General views full advert detail —
+    scoped to their own association.
     """
     serializer_class   = AdvertSerializer
     permission_classes = [IsSecretaryGeneral]
-    queryset           = Advert.objects.all()
+
+    def get_queryset(self):
+        return Advert.objects.filter(
+            operator__association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['Adverts'])
@@ -149,7 +153,10 @@ class ApproveAdvertView(APIView):
 
     def post(self, request, pk):
         try:
-            advert = Advert.objects.get(pk=pk)
+            advert = Advert.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except Advert.DoesNotExist:
             return Response(
                 {'detail': 'Advert not found.'},
@@ -192,7 +199,10 @@ class RejectAdvertView(APIView):
 
     def post(self, request, pk):
         try:
-            advert = Advert.objects.get(pk=pk)
+            advert = Advert.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except Advert.DoesNotExist:
             return Response(
                 {'detail': 'Advert not found.'},
@@ -235,7 +245,10 @@ class AdvertRevenueSummaryView(APIView):
     def get(self, request):
         from django.db.models import Sum
 
-        approved = Advert.objects.filter(status=Advert.Status.APPROVED)
+        approved = Advert.objects.filter(
+            status                 = Advert.Status.APPROVED,
+            operator__association  = request.user.association,
+        )
 
         totals = approved.aggregate(
             total_fees      = Sum('fee'),

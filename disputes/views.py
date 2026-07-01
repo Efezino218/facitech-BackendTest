@@ -1,3 +1,5 @@
+from urllib import request
+
 from django.utils import timezone
 from django.db import transaction
 from rest_framework import generics, status
@@ -92,7 +94,9 @@ class AllDisputesView(generics.ListAPIView):
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = Dispute.objects.all()
+        qs = Dispute.objects.filter(
+            operator__association = self.request.user.association
+        )
         dispute_status = self.request.query_params.get('status')
         if dispute_status:
             qs = qs.filter(status=dispute_status)
@@ -113,7 +117,11 @@ class DisputeDetailAdminView(generics.RetrieveAPIView):
     """
     serializer_class   = DisputeSerializer
     permission_classes = [IsIscooaExec]
-    queryset           = Dispute.objects.all()
+
+    def get_queryset(self):
+        return Dispute.objects.filter(
+            operator__association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['Disputes'])
@@ -127,7 +135,10 @@ class RespondToDisputeView(APIView):
 
     def post(self, request, pk):
         try:
-            dispute = Dispute.objects.get(pk=pk)
+            dispute = Dispute.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except Dispute.DoesNotExist:
             return Response(
                 {'detail': 'Dispute not found.'},
@@ -185,10 +196,13 @@ class DisputeStatsView(APIView):
     def get(self, request):
         from django.db.models import Count
 
-        total     = Dispute.objects.count()
-        by_status = Dispute.objects.values('status').annotate(count=Count('id'))
-        by_category = Dispute.objects.values('category').annotate(count=Count('id'))
-        by_priority = Dispute.objects.values('priority').annotate(count=Count('id'))
+        qs = Dispute.objects.filter(
+            operator__association = request.user.association
+        )
+        total       = qs.count()
+        by_status   = qs.values('status').annotate(count=Count('id'))
+        by_category = qs.values('category').annotate(count=Count('id'))
+        by_priority = qs.values('priority').annotate(count=Count('id'))
 
         return Response({
             'total_disputes':   total,

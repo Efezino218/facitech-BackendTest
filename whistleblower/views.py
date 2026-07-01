@@ -1,3 +1,5 @@
+from urllib import request
+
 from django.utils import timezone
 from django.db import transaction
 from rest_framework import generics, status
@@ -36,8 +38,9 @@ class SubmitReportView(APIView):
 
         # Save with NO user reference whatsoever
         report = WhistleblowerReport.objects.create(
-            category  = serializer.validated_data['category'],
-            narrative = serializer.validated_data['narrative'],
+            category    = serializer.validated_data['category'],
+            narrative   = serializer.validated_data['narrative'],
+            association = request.user.association,
         )
 
         return Response(
@@ -65,7 +68,9 @@ class AllReportsView(generics.ListAPIView):
     permission_classes = [IsPresidentOrLegalAdviser]
 
     def get_queryset(self):
-        qs = WhistleblowerReport.objects.all()
+        qs = WhistleblowerReport.objects.filter(
+            association = self.request.user.association
+        )
         report_status = self.request.query_params.get('status')
         if report_status:
             qs = qs.filter(status=report_status)
@@ -83,7 +88,11 @@ class ReportDetailView(generics.RetrieveAPIView):
     """
     serializer_class   = WhistleblowerReportSerializer
     permission_classes = [IsPresidentOrLegalAdviser]
-    queryset           = WhistleblowerReport.objects.all()
+
+    def get_queryset(self):
+        return WhistleblowerReport.objects.filter(
+            association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['Whistleblower'])
@@ -97,7 +106,10 @@ class RespondToReportView(APIView):
 
     def post(self, request, pk):
         try:
-            report = WhistleblowerReport.objects.get(pk=pk)
+            report = WhistleblowerReport.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except WhistleblowerReport.DoesNotExist:
             return Response(
                 {'detail': 'Report not found.'},
@@ -158,7 +170,10 @@ class ArchiveReportView(APIView):
 
     def post(self, request, pk):
         try:
-            report = WhistleblowerReport.objects.get(pk=pk)
+            report = WhistleblowerReport.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except WhistleblowerReport.DoesNotExist:
             return Response(
                 {'detail': 'Report not found.'},
@@ -200,9 +215,12 @@ class ReportStatsView(APIView):
     def get(self, request):
         from django.db.models import Count
 
-        total      = WhistleblowerReport.objects.count()
-        by_status  = WhistleblowerReport.objects.values('status').annotate(count=Count('id'))
-        by_category = WhistleblowerReport.objects.values('category').annotate(count=Count('id'))
+        qs = WhistleblowerReport.objects.filter(
+            association = request.user.association
+        )
+        total       = qs.count()
+        by_status   = qs.values('status').annotate(count=Count('id'))
+        by_category = qs.values('category').annotate(count=Count('id'))
 
         return Response({
             'total_reports': total,

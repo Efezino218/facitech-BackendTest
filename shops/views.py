@@ -140,7 +140,7 @@ class StaffDetailView(generics.RetrieveUpdateDestroyAPIView):
 class AllShopsView(generics.ListAPIView):
     """
     GET /api/v1/shops/all/
-    ISCOOA Executive sees all registered shops.
+    Association Executive sees shops for their OWN association only.
     Filter by block using ?block=A|B|C etc.
     Filter by operator using ?operator=<email>
     """
@@ -148,7 +148,9 @@ class AllShopsView(generics.ListAPIView):
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = Shop.objects.all()
+        qs = Shop.objects.filter(
+            operator__association = self.request.user.association
+        )
         block = self.request.query_params.get('block')
         if block:
             qs = qs.filter(block=block)
@@ -162,8 +164,13 @@ class AllShopsView(generics.ListAPIView):
 class ShopAdminDetailView(generics.RetrieveAPIView):
     """
     GET /api/v1/shops/all/<id>/
-    ISCOOA Executive views full detail of any shop.
+    Association Executive views full detail of a shop
+    — scoped to their own association.
     """
     serializer_class   = ShopSerializer
     permission_classes = [IsIscooaExec]
-    queryset           = Shop.objects.all()
+
+    def get_queryset(self):
+        return Shop.objects.filter(
+            operator__association = self.request.user.association
+        )

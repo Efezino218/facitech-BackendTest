@@ -43,6 +43,13 @@ class Expense(models.Model):
     expense_ref     = models.CharField(max_length=30, unique=True, blank=True)
     # e.g. EXP-001
 
+    association     = models.ForeignKey(
+                        'associations.Association',
+                        on_delete=models.CASCADE,
+                        related_name='expenses',
+                        null=True, blank=True,
+                      )
+
     title           = models.CharField(max_length=200)
     category        = models.CharField(
                         max_length=30,

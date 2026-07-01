@@ -44,7 +44,7 @@ class ShopListSerializer(serializers.ModelSerializer):
 
 
 class ShopCreateSerializer(serializers.ModelSerializer):
-    """Used when operator registers a new shop."""
+    """Used when operator registers a new shop or updates an existing one."""
     class Meta:
         model  = Shop
         fields = [
@@ -54,7 +54,16 @@ class ShopCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_shop_number(self, value):
-        if Shop.objects.filter(shop_number=value).exists():
+        # Get the current shop instance if this is an update
+        # self.instance is set by DRF when the serializer is used for update
+        current_shop_id = self.instance.id if self.instance else None
+
+        # Check uniqueness but exclude the current shop being edited
+        qs = Shop.objects.filter(shop_number=value)
+        if current_shop_id:
+            qs = qs.exclude(id=current_shop_id)
+
+        if qs.exists():
             raise serializers.ValidationError(
                 f"Shop number '{value}' is already registered on the platform."
             )

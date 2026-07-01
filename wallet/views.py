@@ -153,23 +153,30 @@ class WalletSummaryView(APIView):
 class AllWalletsView(generics.ListAPIView):
     """
     GET /api/v1/wallet/all/
-    ISCOOA Executive sees all operator wallets.
+    Association Executive sees wallets belonging to
+    operators in their OWN association only.
     Read only — oversight only.
     """
     serializer_class   = WalletSerializer
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        return Wallet.objects.all().order_by('-balance')
+        return Wallet.objects.filter(
+            operator__association = self.request.user.association
+        ).order_by('-balance')
 
 
 @extend_schema(tags=['Wallet'])
 class OperatorWalletDetailView(generics.RetrieveAPIView):
     """
     GET /api/v1/wallet/all/<id>/
-    ISCOOA Executive views a specific operator wallet
-    with full transaction history.
+    Association Executive views a specific operator wallet
+    — scoped to their own association only.
     """
     serializer_class   = WalletSerializer
     permission_classes = [IsIscooaExec]
-    queryset           = Wallet.objects.all()
+
+    def get_queryset(self):
+        return Wallet.objects.filter(
+            operator__association = self.request.user.association
+        )

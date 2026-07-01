@@ -45,7 +45,10 @@ class RunReconciliationView(APIView):
             )
 
         # Check bills exist for this period
-        bills = Bill.objects.filter(billing_period=billing_period)
+        bills = Bill.objects.filter(
+            billing_period          = billing_period,
+            operator__association   = request.user.association,
+        )
         if not bills.exists():
             return Response(
                 {'detail': f'No bills found for period {billing_period}.'},
@@ -117,7 +120,9 @@ class ReconciliationLedgerView(generics.ListAPIView):
     permission_classes = [IsTreasurer]
 
     def get_queryset(self):
-        qs = ReconciliationRecord.objects.all()
+        qs = ReconciliationRecord.objects.filter(
+            operator__association = self.request.user.association
+        )
 
         period = self.request.query_params.get('period')
         if period:
@@ -143,7 +148,11 @@ class ReconciliationRecordDetailView(generics.RetrieveAPIView):
     """
     serializer_class   = ReconciliationRecordSerializer
     permission_classes = [IsTreasurer]
-    queryset           = ReconciliationRecord.objects.all()
+
+    def get_queryset(self):
+        return ReconciliationRecord.objects.filter(
+            operator__association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['Reconciliation'])
@@ -157,7 +166,10 @@ class ManualReconcileView(APIView):
 
     def post(self, request, pk):
         try:
-            record = ReconciliationRecord.objects.get(pk=pk)
+            record = ReconciliationRecord.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except ReconciliationRecord.DoesNotExist:
             return Response(
                 {'detail': 'Record not found.'},
@@ -200,7 +212,9 @@ class ExportReconciliationView(APIView):
         from django.http import HttpResponse
 
         period = request.query_params.get('period', '')
-        qs     = ReconciliationRecord.objects.all()
+        qs     = ReconciliationRecord.objects.filter(
+            operator__association = request.user.association
+        )
         if period:
             qs = qs.filter(billing_period=period)
 

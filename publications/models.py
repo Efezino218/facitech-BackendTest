@@ -33,6 +33,13 @@ class Publication(models.Model):
     pub_ref         = models.CharField(max_length=30, unique=True, blank=True)
     # e.g. PUB-2026-0001
 
+    association = models.ForeignKey(
+                    'associations.Association',
+                    on_delete=models.CASCADE,
+                    related_name='publications',
+                    null=True, blank=True,
+                  )
+
     pub_type        = models.CharField(max_length=20, choices=PublicationType.choices)
     subject         = models.CharField(max_length=200)
     content         = models.TextField()
@@ -121,6 +128,13 @@ class Announcement(models.Model):
     id              = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     ann_ref         = models.CharField(max_length=30, unique=True, blank=True)
     # e.g. ANN-2026-0001
+
+    association = models.ForeignKey(
+                    'associations.Association',
+                    on_delete=models.CASCADE,
+                    related_name='announcements',
+                    null=True, blank=True,
+                  )
 
     title           = models.CharField(max_length=200)
     content         = models.TextField()

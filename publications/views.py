@@ -10,7 +10,7 @@ from .serializers import (
     AnnouncementSerializer, AnnouncementCreateSerializer,
 )
 from .permissions import (
-    IsOperator, IsSecretaryGeneral, IsIscooaExecOrOperator
+    IsOperator, IsSecretaryOrPresident, IsIscooaExecOrOperator
 )
 from drf_spectacular.utils import extend_schema
 
@@ -24,12 +24,15 @@ class CreatePublicationView(generics.CreateAPIView):
     Secretary General creates a new publication.
     """
     serializer_class   = PublicationCreateSerializer
-    permission_classes = [IsSecretaryGeneral]
+    permission_classes = [IsSecretaryOrPresident]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        publication = serializer.save(created_by=request.user)
+        publication = serializer.save(
+            created_by  = request.user,
+            association = request.user.association,
+        )
         return Response(
             {
                 'detail':   'Publication created successfully.',
@@ -51,10 +54,12 @@ class AllPublicationsView(generics.ListAPIView):
     Filter by ?status=draft|sent|scheduled|pending_approval
     """
     serializer_class   = PublicationListSerializer
-    permission_classes = [IsSecretaryGeneral]
+    permission_classes = [IsSecretaryOrPresident]
 
     def get_queryset(self):
-        qs = Publication.objects.all()
+        qs = Publication.objects.filter(
+            association = self.request.user.association
+        )
         pub_type = self.request.query_params.get('pub_type')
         if pub_type:
             qs = qs.filter(pub_type=pub_type)
@@ -71,8 +76,12 @@ class PublicationDetailView(generics.RetrieveUpdateAPIView):
     PUT  /api/v1/publications/<id>/
     Secretary General views or updates a publication.
     """
-    permission_classes = [IsSecretaryGeneral]
-    queryset           = Publication.objects.all()
+    permission_classes = [IsSecretaryOrPresident]
+
+    def get_queryset(self):
+        return Publication.objects.filter(
+            association = self.request.user.association
+        )
 
     def get_serializer_class(self):
         if self.request.method in ['PUT', 'PATCH']:
@@ -88,11 +97,14 @@ class SendPublicationView(APIView):
     In production this calls Postmark or Termii.
     For now we simulate a successful send.
     """
-    permission_classes = [IsSecretaryGeneral]
+    permission_classes = [IsSecretaryOrPresident]
 
     def post(self, request, pk):
         try:
-            publication = Publication.objects.get(pk=pk)
+            publication = Publication.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Publication.DoesNotExist:
             return Response(
                 {'detail': 'Publication not found.'},
@@ -107,16 +119,17 @@ class SendPublicationView(APIView):
 
         # Count recipients based on target group
         from accounts.models import User
+        assoc = publication.association
         if publication.target_group == 'all_operators':
-            recipient_count = User.objects.filter(role='op', is_active=True).count()
+            recipient_count = User.objects.filter(role='op', is_active=True, association=assoc).count()
         elif publication.target_group == 'exco_members':
-            recipient_count = User.objects.filter(role='is', is_active=True).count()
+            recipient_count = User.objects.filter(role='is', is_active=True, association=assoc).count()
         elif publication.target_group == 'bot_members':
-            recipient_count = User.objects.filter(role='bot', is_active=True).count()
+            recipient_count = User.objects.filter(role='bot', is_active=True, association=assoc).count()
         elif publication.target_group == 'all':
-            recipient_count = User.objects.filter(is_active=True).count()
+            recipient_count = User.objects.filter(is_active=True, association=assoc).count()
         else:
-            recipient_count = User.objects.filter(role='op', is_active=True).count()
+            recipient_count = User.objects.filter(role='op', is_active=True, association=assoc).count()
 
         # In production: call Postmark for email or Termii for SMS here
         publication.status          = Publication.Status.SENT
@@ -127,7 +140,11 @@ class SendPublicationView(APIView):
         # Send in-app notifications to all operators
         from accounts.models import User as UserModel
         from notifications.utils import send_bulk_notification
-        operators = UserModel.objects.filter(role='op', is_active=True)
+        operators = UserModel.objects.filter(
+            role        = 'op',
+            is_active   = True,
+            association = publication.association,
+        )
         send_bulk_notification(
             users      = operators,
             category   = 'general',
@@ -154,13 +171,14 @@ class CreateAnnouncementView(generics.CreateAPIView):
     Urgent announcements auto-set email and SMS to True.
     """
     serializer_class   = AnnouncementCreateSerializer
-    permission_classes = [IsSecretaryGeneral]
+    permission_classes = [IsSecretaryOrPresident]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         announcement = serializer.save(
             created_by   = request.user,
+            association  = request.user.association,
             status       = Announcement.Status.PUBLISHED,
             publish_date = timezone.now(),
         )
@@ -191,7 +209,9 @@ class AllAnnouncementsView(generics.ListAPIView):
     permission_classes = [IsIscooaExecOrOperator]
 
     def get_queryset(self):
-        qs = Announcement.objects.all()
+        qs = Announcement.objects.filter(
+            association = self.request.user.association
+        )
 
         # Operators only see published announcements
         if self.request.user.role == 'op':
@@ -216,7 +236,11 @@ class AnnouncementDetailView(generics.RetrieveAPIView):
     """
     serializer_class   = AnnouncementSerializer
     permission_classes = [IsIscooaExecOrOperator]
-    queryset           = Announcement.objects.all()
+
+    def get_queryset(self):
+        return Announcement.objects.filter(
+            association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['Publications'])
@@ -225,13 +249,17 @@ class PublicationStatsView(APIView):
     GET /api/v1/publications/stats/
     Secretary General sees publication statistics.
     """
-    permission_classes = [IsSecretaryGeneral]
+    permission_classes = [IsSecretaryOrPresident]
 
     def get(self, request):
         from django.db.models import Count, Sum
 
-        publications = Publication.objects.all()
-        announcements = Announcement.objects.all()
+        publications  = Publication.objects.filter(
+            association = request.user.association
+        )
+        announcements = Announcement.objects.filter(
+            association = request.user.association
+        )
 
         pub_totals = publications.aggregate(
             total_recipients = Sum('recipient_count'),

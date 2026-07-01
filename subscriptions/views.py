@@ -21,43 +21,62 @@ class MySubscriptionView(APIView):
     """
     GET /api/v1/subscriptions/my-subscription/
     Operator views their subscription detail.
-    Shows the 20/80 split, current month, renewal date.
-    Auto-creates subscription record if not yet created.
+    Free trial starts from KYC approval date.
+    Billing starts one month after approval.
+    Shop count is always synced to current active shops.
     """
     permission_classes = [IsOperator]
 
     def get(self, request):
+        from shops.models import Shop
+
         # Get subscription rate from association config
-        default_rate = 100000  # ₦1,000 fallback
+        default_rate = 100000
         try:
-            config       = request.user.association.config
-            default_rate = config.subscription_rate
+            default_rate = request.user.association.config.subscription_rate
         except Exception:
             pass
 
+        # Current active shop count — always live count
+        current_shop_count = Shop.objects.filter(
+            operator  = request.user,
+            is_active = True
+        ).count() or 1
+
         subscription, created = Subscription.objects.get_or_create(
-            operator=request.user,
-            defaults={
+            operator = request.user,
+            defaults = {
                 'status':        Subscription.Status.KYC,
                 'current_month': 1,
-                'shop_count':    Shop.objects.filter(
-                                    operator=request.user,
-                                    is_active=True
-                                 ).count() or 1,
+                'shop_count':    current_shop_count,
                 'rate_per_shop': default_rate,
             }
         )
 
         # Always sync shop count to current active shops
-        if not created:
-            subscription.shop_count = Shop.objects.filter(
-                operator=request.user,
-                is_active=True
-            ).count() or 1
+        # This ensures if operator added shops after
+        # subscription was created the count is always fresh
+        if subscription.shop_count != current_shop_count:
+            subscription.shop_count = current_shop_count
             subscription.save()
 
         serializer = SubscriptionSerializer(subscription)
-        return Response(serializer.data)
+        data = serializer.data
+
+        # Add extra context for the frontend subscription page
+        data['billing_explanation'] = (
+            f'Your subscription covers all {current_shop_count} active shop(s). '
+            f'Monthly fee: ₦{(default_rate * current_shop_count / 100):,.2f}. '
+            f'All shops added before your billing date are included in the same payment.'
+        )
+
+        if subscription.status == Subscription.Status.KYC:
+            data['trial_message'] = (
+                'Month 1 is free. Your billing starts on '
+                f'{subscription.renewal_date or "the date your KYC was approved + 30 days"}.'
+            )
+
+        return Response(data)
 
 
 @extend_schema(tags=['Subscriptions'])
@@ -103,9 +122,33 @@ class PaySubscriptionView(APIView):
         subscription.save()
 
         # Calculate amounts
-        amount        = subscription.cycle_total()
-        iscooa_cut    = int(amount * 0.20)
-        iprolance_cut = int(amount * 0.80)
+        # Sync shop count to current active shops at payment time
+        from shops.models import Shop
+        current_shop_count = Shop.objects.filter(
+            operator  = request.user,
+            is_active = True
+        ).count() or 1
+
+        if subscription.shop_count != current_shop_count:
+            subscription.shop_count = current_shop_count
+            subscription.save()
+
+        # Calculate amounts based on current shop count
+        # This ensures all shops added before payment date are included
+        amount = subscription.cycle_total()
+
+        # Get revenue split from association config
+        assoc_share    = 20
+        platform_share = 80
+        try:
+            config         = request.user.association.config
+            assoc_share    = config.association_share
+            platform_share = config.platform_share
+        except Exception:
+            pass
+
+        iscooa_cut    = int(amount * (assoc_share / 100))
+        iprolance_cut = int(amount * (platform_share / 100))
 
         # Determine billing period string
         period = timezone.now().strftime('%Y-%m')
@@ -138,14 +181,19 @@ class PaySubscriptionView(APIView):
             subscription.save()
 
         return Response({
-            'detail':           'Subscription payment successful.',
-            'period':           period,
-            'cycle':            cycle,
-            'amount_naira':     payment.amount_naira,
-            'iscooa_cut_naira': payment.iscooa_cut_naira,
-            'iprolance_cut_naira': payment.iprolance_cut_naira,
-            'payment_ref':      payment.payment_ref,
-            'current_month':    subscription.current_month,
+            'detail':               'Subscription payment successful.',
+            'period':               period,
+            'cycle':                cycle,
+            'shop_count':           subscription.shop_count,
+            'amount_naira':         payment.amount_naira,
+            'iscooa_cut_naira':     payment.iscooa_cut_naira,
+            'iprolance_cut_naira':  payment.iprolance_cut_naira,
+            'payment_ref':          payment.payment_ref,
+            'current_month':        subscription.current_month,
+            'billing_note': (
+                f'Payment covers {subscription.shop_count} shop(s). '
+                f'All shops active at payment time are included.'
+            ),
         })
 
 
@@ -155,14 +203,16 @@ class PaySubscriptionView(APIView):
 class AllSubscriptionsView(generics.ListAPIView):
     """
     GET /api/v1/subscriptions/all/
-    Treasurer sees all operator subscriptions.
+    Treasurer sees subscriptions for their OWN association only.
     Filter by ?status=active|kyc|overdue|suspended
     """
     serializer_class   = SubscriptionListSerializer
     permission_classes = [IsTreasurer]
 
     def get_queryset(self):
-        qs = Subscription.objects.all()
+        qs = Subscription.objects.filter(
+            operator__association = self.request.user.association
+        )
         sub_status = self.request.query_params.get('status')
         if sub_status:
             qs = qs.filter(status=sub_status)
@@ -173,11 +223,16 @@ class AllSubscriptionsView(generics.ListAPIView):
 class SubscriptionDetailAdminView(generics.RetrieveAPIView):
     """
     GET /api/v1/subscriptions/all/<id>/
-    Treasurer views full subscription detail for any operator.
+    Treasurer views full subscription detail —
+    scoped to their own association.
     """
     serializer_class   = SubscriptionSerializer
     permission_classes = [IsTreasurer]
-    queryset           = Subscription.objects.all()
+
+    def get_queryset(self):
+        return Subscription.objects.filter(
+            operator__association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['Subscriptions'])
@@ -193,7 +248,8 @@ class CommissionSummaryView(APIView):
         from django.db.models import Sum
 
         payments = SubscriptionPayment.objects.filter(
-            status=SubscriptionPayment.Status.PAID
+            status = SubscriptionPayment.Status.PAID,
+            operator__association  = request.user.association,
         )
 
         # Optional filter by period e.g. ?period=2026-05

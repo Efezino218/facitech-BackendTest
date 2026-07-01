@@ -181,7 +181,7 @@ class RegisterExternalPaymentView(generics.CreateAPIView):
 class AllBillsView(generics.ListAPIView):
     """
     GET /api/v1/bills/all/
-    ISCOOA Executive sees all bills.
+    Association Executive sees bills for their OWN association only.
     Filter by ?status=unpaid|paid|verified
     Filter by ?period=2026-05
     Filter by ?shop=B-11
@@ -190,7 +190,9 @@ class AllBillsView(generics.ListAPIView):
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = Bill.objects.all()
+        qs = Bill.objects.filter(
+            operator__association = self.request.user.association
+        )
         bill_status = self.request.query_params.get('status')
         if bill_status:
             qs = qs.filter(status=bill_status)
@@ -201,7 +203,6 @@ class AllBillsView(generics.ListAPIView):
         if shop:
             qs = qs.filter(shop__shop_number__icontains=shop)
         return qs
-
 
 @extend_schema(tags=['Bills'])
 class RaiseBillView(generics.CreateAPIView):
@@ -252,50 +253,38 @@ class VerifyBillView(APIView):
     """
     POST /api/v1/bills/<id>/verify/
     Treasurer or Secretary verifies a paid bill.
-    Unlocks invoice and receipt PDFs for the operator.
+    Can only verify bills belonging to their own association.
     """
     permission_classes = [IsTreasurerOrSecretary]
 
     def post(self, request, pk):
         try:
-            bill = Bill.objects.get(pk=pk)
+            bill = Bill.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except Bill.DoesNotExist:
             return Response(
                 {'detail': 'Bill not found.'},
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        if bill.status != Bill.Status.PAID:
-            return Response(
-                {'detail': 'Only bills with status PAID can be verified.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        bill.status      = Bill.Status.VERIFIED
-        bill.verified_by = request.user
-        bill.verified_at = timezone.now()
-        bill.save()
-
-        return Response({
-            'detail': 'Bill verified successfully.',
-            'invoice_id': bill.invoice_id,
-            'status':     bill.status,
-            'verified_at': bill.verified_at,
-        })
-
 
 @extend_schema(tags=['Bills'])
 class AllExternalPaymentsView(generics.ListAPIView):
     """
     GET /api/v1/bills/external-payments/all/
-    ISCOOA Executive sees all external payment registrations.
+    Association Executive sees external payments for
+    their OWN association only.
     Filter by ?status=pending|verified|rejected
     """
     serializer_class   = ExternalPaymentSerializer
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = ExternalPayment.objects.all()
+        qs = ExternalPayment.objects.filter(
+            operator__association = self.request.user.association
+        )
         ep_status = self.request.query_params.get('status')
         if ep_status:
             qs = qs.filter(status=ep_status)
@@ -312,7 +301,10 @@ class VerifyExternalPaymentView(APIView):
 
     def post(self, request, pk):
         try:
-            ep = ExternalPayment.objects.get(pk=pk)
+            ep = ExternalPayment.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except ExternalPayment.DoesNotExist:
             return Response(
                 {'detail': 'External payment not found.'},
@@ -350,7 +342,10 @@ class RejectExternalPaymentView(APIView):
 
     def post(self, request, pk):
         try:
-            ep = ExternalPayment.objects.get(pk=pk)
+            ep = ExternalPayment.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except ExternalPayment.DoesNotExist:
             return Response(
                 {'detail': 'External payment not found.'},

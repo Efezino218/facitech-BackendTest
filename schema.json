@@ -319,8 +319,8 @@ paths:
       description: |-
         POST /api/v1/kyc/start/
         Operator starts a new KYC application.
-        Creates the root KYCApplication record.
-        Only one application per operator allowed.
+        Status starts as DRAFT — not submitted yet.
+        Only moves to SUBMITTED after Step 11 declaration.
       tags:
       - KYC
       security:
@@ -473,7 +473,10 @@ paths:
   /api/v1/kyc/step/declaration/:
     post:
       operationId: v1_kyc_step_declaration_create
-      description: POST /api/v1/kyc/step/declaration/ — Step 11 (final submission)
+      description: |-
+        POST /api/v1/kyc/step/declaration/
+        Step 11 — Final submission.
+        This is the ONLY place status moves to SUBMITTED.
       tags:
       - KYC
       security:
@@ -585,6 +588,7 @@ paths:
       description: |-
         GET /api/v1/kyc/queue/
         ISCOOA Executive sees all KYC applications.
+        DRAFT applications are excluded — they are not submitted yet.
         Filter by status using ?status=submitted|docs_requested|approved|rejected
       parameters:
       - name: page
@@ -1122,7 +1126,8 @@ paths:
       description: |-
         POST /api/v1/bills/my-bills/<id>/pay/
         Operator pays a bill via Cool MFB Wallet.
-        Marks bill as paid instantly.
+        Debits the wallet immediately and marks bill as paid.
+        Fails with 400 if wallet balance is insufficient.
         In production this will call the Cool MFB API.
       parameters:
       - in: path
@@ -1132,7 +1137,7 @@ paths:
           format: uuid
         required: true
       tags:
-      - Bills
+      - v1
       security:
       - jwtAuth: []
       - BearerAuth: []
@@ -1170,6 +1175,7 @@ paths:
       description: |-
         POST /api/v1/bills/external-payments/register/
         Operator registers an external payment with evidence.
+        operator is always set from request.user — never accepted from the request body.
       tags:
       - Bills
       requestBody:
@@ -3941,6 +3947,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedAssociationList'
           description: ''
+  /api/v1/associations/public/:
+    get:
+      operationId: v1_associations_public_retrieve
+      description: |-
+        GET /api/v1/associations/public/
+        PUBLIC endpoint — no auth required.
+        Returns a simple list of all active associations.
+        Used for the registration page dropdown.
+        Only returns slug, name and logo_url.
+        No financial data exposed.
+      tags:
+      - Associations
+      security:
+      - jwtAuth: []
+      - BearerAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
   /api/v1/associations/create/:
     post:
       operationId: v1_associations_create_create
@@ -5843,7 +5868,7 @@ components:
           type: string
           readOnly: true
         status:
-          $ref: '#/components/schemas/StatusFb1Enum'
+          $ref: '#/components/schemas/StatusB56Enum'
         member_number:
           type: string
           nullable: true
@@ -5950,7 +5975,7 @@ components:
           type: string
           readOnly: true
         status:
-          $ref: '#/components/schemas/StatusFb1Enum'
+          $ref: '#/components/schemas/StatusB56Enum'
         member_number:
           type: string
           nullable: true
@@ -8675,6 +8700,20 @@ components:
         * `passed` - Passed
         * `rejected` - Rejected
         * `deferred` - Deferred
+    StatusB56Enum:
+      enum:
+      - draft
+      - submitted
+      - docs_requested
+      - approved
+      - rejected
+      type: string
+      description: |-
+        * `draft` - Draft
+        * `submitted` - Submitted
+        * `docs_requested` - Documents Requested
+        * `approved` - Approved
+        * `rejected` - Rejected
     StatusC85Enum:
       enum:
       - open
@@ -8727,18 +8766,6 @@ components:
         * `sent` - Sent
         * `scheduled` - Scheduled
         * `failed` - Failed
-    StatusFb1Enum:
-      enum:
-      - submitted
-      - docs_requested
-      - approved
-      - rejected
-      type: string
-      description: |-
-        * `submitted` - Submitted
-        * `docs_requested` - Documents Requested
-        * `approved` - Approved
-        * `rejected` - Rejected
     Subscription:
       type: object
       description: |-
@@ -9136,7 +9163,20 @@ components:
           type: string
           format: date-time
           readOnly: true
+        association_id:
+          type: string
+          format: uuid
+          readOnly: true
+        association_name:
+          type: string
+          readOnly: true
+        association_slug:
+          type: string
+          readOnly: true
       required:
+      - association_id
+      - association_name
+      - association_slug
       - created_at
       - email
       - full_name

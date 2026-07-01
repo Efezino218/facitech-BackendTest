@@ -120,9 +120,8 @@ class OperatorOverviewView(APIView):
 class ExecOverviewView(APIView):
     """
     GET /api/v1/overview/exec/
-    ISCOOA Executive home dashboard.
-    Aggregates KYC queue, adverts, disputes,
-    revenue and pending actions.
+    Association Executive home dashboard.
+    Works for any association — not ISCOOA specific.
     """
     permission_classes = [IsAuthenticated]
 

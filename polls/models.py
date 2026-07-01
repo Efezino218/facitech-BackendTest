@@ -18,6 +18,13 @@ class Poll(models.Model):
     poll_ref        = models.CharField(max_length=30, unique=True, blank=True)
     # e.g. POLL-2026-0001
 
+    association     = models.ForeignKey(
+                        'associations.Association',
+                        on_delete=models.CASCADE,
+                        related_name='polls',
+                        null=True, blank=True,
+                      )
+
     question        = models.TextField()
     description     = models.TextField(blank=True)
     # Optional context for the poll question

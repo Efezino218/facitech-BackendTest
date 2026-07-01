@@ -35,6 +35,7 @@ class CreateResolutionView(generics.CreateAPIView):
         resolution = serializer.save(
             proposed_by   = request.user,
             proposed_date = timezone.now().date(),
+            association   = request.user.association,
         )
         return Response(
             {
@@ -58,7 +59,9 @@ class AllResolutionsView(generics.ListAPIView):
     permission_classes = [IsBOTOrAdvisor]
 
     def get_queryset(self):
-        qs = Resolution.objects.all()
+        qs = Resolution.objects.filter(
+            association = self.request.user.association
+        )
         res_status = self.request.query_params.get('status')
         if res_status:
             qs = qs.filter(status=res_status)
@@ -79,7 +82,10 @@ class ResolutionDetailView(generics.RetrieveUpdateAPIView):
     Only draft resolutions can be updated.
     """
     permission_classes = [CanDraftResolution]
-    queryset           = Resolution.objects.all()
+    def get_queryset(self):
+        return Resolution.objects.filter(
+            association = self.request.user.association
+        )
 
     def get_serializer_class(self):
         if self.request.method in ['PUT', 'PATCH']:
@@ -112,7 +118,10 @@ class PublishResolutionView(APIView):
 
     def post(self, request, pk):
         try:
-            resolution = Resolution.objects.get(pk=pk)
+            resolution = Resolution.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Resolution.DoesNotExist:
             return Response(
                 {'detail': 'Resolution not found.'},
@@ -149,7 +158,10 @@ class CastResolutionVoteView(APIView):
 
     def post(self, request, pk):
         try:
-            resolution = Resolution.objects.get(pk=pk)
+            resolution = Resolution.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Resolution.DoesNotExist:
             return Response(
                 {'detail': 'Resolution not found.'},
@@ -222,7 +234,10 @@ class FinalizeResolutionView(APIView):
 
     def post(self, request, pk):
         try:
-            resolution = Resolution.objects.get(pk=pk)
+            resolution = Resolution.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Resolution.DoesNotExist:
             return Response(
                 {'detail': 'Resolution not found.'},
@@ -289,7 +304,10 @@ class DeferResolutionView(APIView):
 
     def post(self, request, pk):
         try:
-            resolution = Resolution.objects.get(pk=pk)
+            resolution = Resolution.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Resolution.DoesNotExist:
             return Response(
                 {'detail': 'Resolution not found.'},
@@ -328,7 +346,10 @@ class SubmitAdvisoryNoteView(APIView):
 
     def post(self, request, pk):
         try:
-            resolution = Resolution.objects.get(pk=pk)
+            resolution = Resolution.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Resolution.DoesNotExist:
             return Response(
                 {'detail': 'Resolution not found.'},

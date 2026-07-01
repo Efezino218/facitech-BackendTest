@@ -6,9 +6,9 @@ from shops.models import Shop
 
 class ToiletPricing(models.Model):
     """
-    Configurable toilet pricing.
-    Editable by ISCOOA Treasurer from the admin panel.
-    Only one active pricing record at a time.
+    Configurable toilet pricing per association.
+    Each association has its own pricing record.
+    Editable by the association Treasurer.
     """
 
     class Plan(models.TextChoices):
@@ -17,8 +17,14 @@ class ToiletPricing(models.Model):
         QUARTERLY = 'quarterly', 'Quarterly'
         ANNUAL    = 'annual',    'Annual'
 
+    association    = models.ForeignKey(
+                        'associations.Association',
+                        on_delete=models.CASCADE,
+                        related_name='toilet_pricing',
+                        null=True, blank=True,
+                      )
+
     # Default prices in kobo as per the brief
-    # Daily ₦100, Monthly ₦1,000, Quarterly ₦2,500, Annual ₦9,000
     daily_kobo     = models.BigIntegerField(default=10000)
     monthly_kobo   = models.BigIntegerField(default=100000)
     quarterly_kobo = models.BigIntegerField(default=250000)
@@ -36,9 +42,16 @@ class ToiletPricing(models.Model):
 
     class Meta:
         db_table = 'toilet_pricing'
+        # Each association can only have one active pricing record
+        unique_together = ['association', 'is_active']
 
     def __str__(self):
-        return f"Toilet Pricing (Daily: ₦{self.daily_kobo/100}, Monthly: ₦{self.monthly_kobo/100})"
+        assoc_name = self.association.short_name if self.association else 'No Association'
+        return (
+            f"{assoc_name} Pricing "
+            f"(Daily: ₦{self.daily_kobo/100}, "
+            f"Monthly: ₦{self.monthly_kobo/100})"
+        )
 
     def get_price(self, plan):
         """Return price in kobo for a given plan."""
@@ -71,7 +84,8 @@ class ToiletSubscription(models.Model):
     """
     Per-person toilet access subscription.
     Registered by operators for their staff or customers.
-    100% of revenue goes to ISCOOA — no Iprolance cut.
+    Scoped to the operator's association.
+    100% of revenue goes to the association — no platform cut.
     """
 
     class PersonType(models.TextChoices):
@@ -89,6 +103,14 @@ class ToiletSubscription(models.Model):
         EXPIRED = 'expired', 'Expired'
 
     id              = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Association this subscription belongs to
+    association     = models.ForeignKey(
+                        'associations.Association',
+                        on_delete=models.CASCADE,
+                        related_name='toilet_subscriptions',
+                        null=True, blank=True,
+                      )
 
     # Who registered this subscription
     registered_by   = models.ForeignKey(
@@ -112,7 +134,7 @@ class ToiletSubscription(models.Model):
 
     plan            = models.CharField(max_length=20, choices=Plan.choices)
     amount          = models.BigIntegerField()
-    # stored in kobo — 100% ISCOOA revenue
+    # stored in kobo — 100% association revenue
 
     # Dates
     start_date      = models.DateField()
@@ -129,7 +151,6 @@ class ToiletSubscription(models.Model):
 
     # Unique reference for this person's access
     access_ref      = models.CharField(max_length=30, unique=True, blank=True)
-    # e.g. TOILET-2026-0001
 
     created_at      = models.DateTimeField(auto_now_add=True)
     updated_at      = models.DateTimeField(auto_now=True)
@@ -151,8 +172,13 @@ class ToiletSubscription(models.Model):
         return self.expiry_date < timezone.now().date()
 
     def save(self, *args, **kwargs):
-        # Auto-generate access ref on first save
         if not self.access_ref:
             count = ToiletSubscription.objects.count() + 1
             self.access_ref = f"TOILET-{self.start_date.year}-{count:04d}"
+        # Auto-set association from registered_by user
+        if not self.association and self.registered_by_id:
+            try:
+                self.association = self.registered_by.association
+            except Exception:
+                pass
         super().save(*args, **kwargs)

@@ -1,3 +1,4 @@
+from urllib import request
 import uuid
 from django.utils import timezone
 from django.db import transaction
@@ -323,8 +324,12 @@ class KYCQueueView(generics.ListAPIView):
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        # Never show drafts in the executive queue
-        qs = KYCApplication.objects.exclude(status=KYCStatus.DRAFT)
+        # Never show drafts, and only show this exec's own association
+        qs = KYCApplication.objects.exclude(
+            status=KYCStatus.DRAFT
+        ).filter(
+            operator__association = self.request.user.association
+        )
 
         status_filter = self.request.query_params.get('status')
         if status_filter:
@@ -346,11 +351,16 @@ class KYCQueueView(generics.ListAPIView):
 class KYCDetailView(generics.RetrieveAPIView):
     """
     GET /api/v1/kyc/<id>/
-    ISCOOA Executive views full KYC record.
+    Association Executive views full KYC record —
+    scoped to their own association.
     """
     serializer_class   = KYCApplicationSerializer
     permission_classes = [IsIscooaExec]
-    queryset           = KYCApplication.objects.all()
+
+    def get_queryset(self):
+        return KYCApplication.objects.filter(
+            operator__association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['KYC'])
@@ -364,7 +374,10 @@ class KYCApproveView(APIView):
 
     def post(self, request, pk):
         try:
-            application = KYCApplication.objects.get(pk=pk)
+            application = KYCApplication.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except KYCApplication.DoesNotExist:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -414,6 +427,71 @@ class KYCApproveView(APIView):
                 request     = request,
             )
 
+
+
+        with transaction.atomic():
+            application.status        = KYCStatus.APPROVED
+            application.member_number = member_number
+            application.approved_by   = request.user
+            application.approved_date = timezone.now()
+            application.save()
+
+            # Also update the operator's user record
+            application.operator.member_number = member_number
+            application.operator.save()
+
+            note = request.data.get('note', 'Application approved.')
+            KYCReviewNote.objects.create(
+                application=application,
+                reviewed_by=request.user,
+                note=note,
+            )
+
+            # ── Start free trial from approval date ──────────────────
+            from subscriptions.models import Subscription
+            from shops.models import Shop
+
+            shop_count = Shop.objects.filter(
+                operator  = application.operator,
+                is_active = True
+            ).count() or 1
+
+            # Get subscription rate from association config
+            default_rate = 100000
+            try:
+                default_rate = application.operator.association.config.subscription_rate
+            except Exception:
+                pass
+
+            # Set the trial start date to TODAY (approval date)
+            # Billing Month 2 starts one month from today
+            import datetime
+            trial_start  = timezone.now().date()
+            billing_date = trial_start + datetime.timedelta(days=30)
+
+            Subscription.objects.update_or_create(
+                operator = application.operator,
+                defaults = {
+                    'status':        Subscription.Status.KYC,
+                    'current_month': 1,
+                    'shop_count':    shop_count,
+                    'rate_per_shop': default_rate,
+                    'period_start':  trial_start,
+                    'renewal_date':  billing_date,
+                }
+            )
+
+            from audit.models import log_action
+            log_action(
+                user        = request.user,
+                action      = 'approve',
+                table_name  = 'kyc_applications',
+                record_id   = str(application.id),
+                record_ref  = application.kyc_id,
+                description = f'KYC approved for {application.operator.email}. Member number: {member_number}',
+                request     = request,
+            )
+
         return Response({
             'detail': 'KYC approved.',
             'member_number': member_number,
@@ -430,7 +508,10 @@ class KYCRequestDocsView(APIView):
 
     def post(self, request, pk):
         try:
-            application = KYCApplication.objects.get(pk=pk)
+            application = KYCApplication.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except KYCApplication.DoesNotExist:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -464,7 +545,10 @@ class KYCRejectView(APIView):
 
     def post(self, request, pk):
         try:
-            application = KYCApplication.objects.get(pk=pk)
+            application = KYCApplication.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except KYCApplication.DoesNotExist:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 

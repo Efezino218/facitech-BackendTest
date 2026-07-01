@@ -25,7 +25,10 @@ class ActivePollsView(generics.ListAPIView):
     permission_classes = [IsOperator]
 
     def get_queryset(self):
-        return Poll.objects.filter(status=Poll.Status.ACTIVE)
+        return Poll.objects.filter(
+            status      = Poll.Status.ACTIVE,
+            association = self.request.user.association,
+        )
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -41,7 +44,10 @@ class PollDetailView(generics.RetrieveAPIView):
     """
     serializer_class   = PollSerializer
     permission_classes = [IsOperatorOrExec]
-    queryset           = Poll.objects.all()
+    def get_queryset(self):
+        return Poll.objects.filter(
+            association = self.request.user.association
+        )
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -60,7 +66,10 @@ class CastVoteView(APIView):
 
     def post(self, request, pk):
         try:
-            poll = Poll.objects.get(pk=pk)
+            poll = Poll.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Poll.DoesNotExist:
             return Response(
                 {'detail': 'Poll not found.'},
@@ -136,7 +145,10 @@ class CreatePollView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        poll = serializer.save(created_by=request.user)
+        poll = serializer.save(
+            created_by  = request.user,
+            association = request.user.association,
+        )
         return Response(
             {
                 'detail':   'Poll created successfully.',
@@ -159,7 +171,9 @@ class AllPollsView(generics.ListAPIView):
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = Poll.objects.all()
+        qs = Poll.objects.filter(
+            association = self.request.user.association
+        )
         poll_status = self.request.query_params.get('status')
         if poll_status:
             qs = qs.filter(status=poll_status)
@@ -179,7 +193,10 @@ class PollAdminDetailView(generics.RetrieveAPIView):
     """
     serializer_class   = PollSerializer
     permission_classes = [IsIscooaExec]
-    queryset           = Poll.objects.all()
+    def get_queryset(self):
+        return Poll.objects.filter(
+            association = self.request.user.association
+        )
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -197,7 +214,10 @@ class ClosePollView(APIView):
 
     def post(self, request, pk):
         try:
-            poll = Poll.objects.get(pk=pk)
+            poll = Poll.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Poll.DoesNotExist:
             return Response(
                 {'detail': 'Poll not found.'},
@@ -237,7 +257,10 @@ class PublishPollView(APIView):
 
     def post(self, request, pk):
         try:
-            poll = Poll.objects.get(pk=pk)
+            poll = Poll.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Poll.DoesNotExist:
             return Response(
                 {'detail': 'Poll not found.'},

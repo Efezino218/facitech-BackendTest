@@ -6,14 +6,24 @@ class IsOperator(BasePermission):
         return request.user.is_authenticated and request.user.role == 'op'
 
 
-class IsSecretaryGeneral(BasePermission):
+# class IsSecretaryGeneral(BasePermission):
+#     def has_permission(self, request, view):
+#         return (
+#             request.user.is_authenticated and
+#             request.user.role == 'is' and
+#             request.user.ipos == 'secretary_general'
+#         )
+
+
+class IsSecretaryOrPresident(BasePermission):
+    """Allow Secretary General or President to manage publications/announcements."""
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and
             request.user.role == 'is' and
-            request.user.ipos == 'secretary_general'
+            request.user.ipos in ['secretary_general', 'president']
         )
-
+    
 
 class IsIscooaExecOrOperator(BasePermission):
     """

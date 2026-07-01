@@ -24,6 +24,13 @@ class Resolution(models.Model):
     res_ref         = models.CharField(max_length=30, unique=True, blank=True)
     # e.g. RES-001
 
+    association     = models.ForeignKey(
+                        'associations.Association',
+                        on_delete=models.CASCADE,
+                        related_name='resolutions',
+                        null=True, blank=True,
+                      )
+
     title           = models.CharField(max_length=200)
     full_text       = models.TextField()
     # Full resolution text

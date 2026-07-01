@@ -77,7 +77,9 @@ class AllPenaltiesView(generics.ListAPIView):
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = Penalty.objects.all()
+        qs = Penalty.objects.filter(
+            operator__association = self.request.user.association
+        )
         pen_status = self.request.query_params.get('status')
         if pen_status:
             qs = qs.filter(status=pen_status)
@@ -131,7 +133,11 @@ class PenaltyDetailAdminView(generics.RetrieveAPIView):
     """
     serializer_class   = PenaltySerializer
     permission_classes = [IsIscooaExec]
-    queryset           = Penalty.objects.all()
+
+    def get_queryset(self):
+        return Penalty.objects.filter(
+            operator__association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['Enforcement'])
@@ -144,7 +150,10 @@ class WaivePenaltyView(APIView):
 
     def post(self, request, pk):
         try:
-            penalty = Penalty.objects.get(pk=pk)
+            penalty = Penalty.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except Penalty.DoesNotExist:
             return Response(
                 {'detail': 'Penalty not found.'},
@@ -187,7 +196,9 @@ class AllShutdownsView(generics.ListAPIView):
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = ShutdownNotice.objects.all()
+        qs = ShutdownNotice.objects.filter(
+            operator__association = self.request.user.association
+        )
         sdn_status = self.request.query_params.get('status')
         if sdn_status:
             qs = qs.filter(status=sdn_status)
@@ -244,7 +255,10 @@ class LiftShutdownView(APIView):
 
     def post(self, request, pk):
         try:
-            shutdown = ShutdownNotice.objects.get(pk=pk)
+            shutdown = ShutdownNotice.objects.get(
+                pk = pk,
+                operator__association = request.user.association,
+            )
         except ShutdownNotice.DoesNotExist:
             return Response(
                 {'detail': 'Shutdown notice not found.'},
@@ -299,8 +313,12 @@ class EnforcementStatsView(APIView):
     def get(self, request):
         from django.db.models import Sum, Count
 
-        penalties  = Penalty.objects.all()
-        shutdowns  = ShutdownNotice.objects.all()
+        penalties  = Penalty.objects.filter(
+            operator__association = request.user.association
+        )
+        shutdowns  = ShutdownNotice.objects.filter(
+            operator__association = request.user.association
+        )
 
         pen_totals = penalties.aggregate(
             total_amount  = Sum('amount'),

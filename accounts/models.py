@@ -6,7 +6,7 @@ from django.db import models
 # ─── ROLE CONSTANTS ───────────────────────────────────────────────────────────
 class Role(models.TextChoices):
     OPERATOR        = 'op',  'Operator'
-    ISCOOA_EXEC     = 'is',  'ISCOOA Executive'
+    ISCOOA_EXEC     = 'is',  'Association Executive'
     BOARD_OF_TRUSTEE = 'bot', 'Board of Trustees'
     ADVISOR         = 'adv', 'Advisor'
     SUPER_ADMIN     = 'sa',  'Super Admin'

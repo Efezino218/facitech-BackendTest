@@ -35,7 +35,10 @@ class RaiseExpenseView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
-            expense = serializer.save(raised_by=request.user)
+            expense = serializer.save(
+                raised_by   = request.user,
+                association = request.user.association,
+            )
             create_approval_steps(expense)
 
         return Response(
@@ -63,7 +66,9 @@ class AllExpensesView(generics.ListAPIView):
     permission_classes = [IsIscooaExec]
 
     def get_queryset(self):
-        qs = Expense.objects.all()
+        qs = Expense.objects.filter(
+            association = self.request.user.association
+        )
         exp_status = self.request.query_params.get('status')
         if exp_status:
             qs = qs.filter(status=exp_status)
@@ -81,7 +86,11 @@ class ExpenseDetailView(generics.RetrieveAPIView):
     """
     serializer_class   = ExpenseSerializer
     permission_classes = [IsIscooaExec]
-    queryset           = Expense.objects.all()
+
+    def get_queryset(self):
+        return Expense.objects.filter(
+            association = self.request.user.association
+        )
 
 
 @extend_schema(tags=['Expenses'])
@@ -96,7 +105,10 @@ class ApproveExpenseStepView(APIView):
 
     def post(self, request, pk):
         try:
-            expense = Expense.objects.get(pk=pk)
+            expense = Expense.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Expense.DoesNotExist:
             return Response(
                 {'detail': 'Expense not found.'},
@@ -213,7 +225,10 @@ class BOTRatifyExpenseView(APIView):
 
     def post(self, request, pk):
         try:
-            expense = Expense.objects.get(pk=pk)
+            expense = Expense.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Expense.DoesNotExist:
             return Response(
                 {'detail': 'Expense not found.'},
@@ -284,7 +299,10 @@ class MarkExpensePaidView(APIView):
 
     def post(self, request, pk):
         try:
-            expense = Expense.objects.get(pk=pk)
+            expense = Expense.objects.get(
+                pk          = pk,
+                association = request.user.association,
+            )
         except Expense.DoesNotExist:
             return Response(
                 {'detail': 'Expense not found.'},
@@ -330,7 +348,8 @@ class BOTPendingExpensesView(generics.ListAPIView):
 
     def get_queryset(self):
         return Expense.objects.filter(
-            status = ExpenseStatus.PENDING_BOT
+            status      = ExpenseStatus.PENDING_BOT,
+            association = self.request.user.association,
         )
 
 
@@ -345,7 +364,9 @@ class ExpenseStatsView(APIView):
     def get(self, request):
         from django.db.models import Sum, Count
 
-        expenses = Expense.objects.all()
+        expenses = Expense.objects.filter(
+            association = request.user.association
+        )
         totals   = expenses.aggregate(
             total_amount = Sum('amount'),
             total_count  = Count('id'),
