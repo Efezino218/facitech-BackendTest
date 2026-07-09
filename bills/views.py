@@ -4,6 +4,8 @@ from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from audit.models import log_action
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
 
 from .models import Bill, ExternalPayment, generate_invoice_id
 from .serializers import (
@@ -121,6 +123,26 @@ class PayBillView(APIView):
             bill.paid_ref = paid_ref
             bill.save()
 
+
+            # Notify treasurer that a bill has been paid
+            treasurer_users = User.objects.filter(
+                role        = 'is',
+                ipos        = 'treasurer',
+                association = request.user.association,
+                is_active   = True,
+            )
+            send_bulk_notification(
+                users      = treasurer_users,
+                category   = 'bills',
+                title      = f'Bill Paid — {bill.invoice_id}',
+                message    = (
+                    f'Operator {request.user.full_name or request.user.email} '
+                    f'has paid bill {bill.invoice_id} '
+                    f'(₦{bill.total_naira:,.2f}). Awaiting your verification.'
+                ),
+                related_id = str(bill.id),
+            )
+
         return Response({
             'detail':            'Payment successful. Awaiting ISCOOA verification.',
             'invoice_id':        bill.invoice_id,
@@ -167,6 +189,28 @@ class RegisterExternalPaymentView(generics.CreateAPIView):
         )
         serializer.is_valid(raise_exception=True)
         external_payment = serializer.save(operator=request.user)
+
+        
+        # Notify treasurer of new external payment
+        treasurer_users = User.objects.filter(
+            role        = 'is',
+            ipos        = 'treasurer',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = treasurer_users,
+            category   = 'bills',
+            title      = 'External Payment Registered',
+            message    = (
+                f'Operator {request.user.full_name or request.user.email} '
+                f'has registered an external payment of '
+                f'₦{external_payment.amount_naira:,.2f} '
+                f'for period {external_payment.billing_period}. '
+                f'Awaiting your verification.'
+            ),
+            related_id = str(external_payment.id),
+        )
 
         return Response(
             self.get_serializer(external_payment).data,
@@ -226,6 +270,19 @@ class RaiseBillView(generics.CreateAPIView):
                 raised_by  = request.user,
             )
 
+            # Notify operator that a new bill has been raised
+            send_notification(
+                user       = bill.operator,
+                category   = 'bills',
+                title      = f'New Bill — {bill.invoice_id}',
+                message    = (
+                    f'A new bill ({bill.invoice_id}) has been raised for shop '
+                    f'{bill.shop.shop_number} for period {bill.billing_period}. '
+                    f'Amount due: ₦{bill.total_naira:,.2f}.'
+                ),
+                related_id = str(bill.id),
+            )
+
             log_action(
                 user        = request.user,
                 action      = 'create',
@@ -268,6 +325,41 @@ class VerifyBillView(APIView):
                 {'detail': 'Bill not found.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        # Only paid bills can be verified
+        if bill.status != Bill.Status.PAID:
+            return Response(
+                {'detail': 'Only paid bills can be verified.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Don't verify twice
+        if bill.status == Bill.Status.VERIFIED:
+            return Response(
+                {'detail': 'Bill is already verified.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Verify the bill
+        bill.status = Bill.Status.VERIFIED
+        bill.verified_by = request.user
+        bill.verified_at = timezone.now()
+        bill.save()
+
+        # Notify operator their bill has been verified
+        send_notification(
+            user=bill.operator,
+            category='bills',
+            title=f'Bill Verified — {bill.invoice_id}',
+            message=(
+                f'Your payment for bill {bill.invoice_id} '
+                f'has been verified. Your receipt is now available.'
+            ),
+            related_id=str(bill.id),
+        )
+
+        serializer = BillSerializer(bill)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 @extend_schema(tags=['Bills'])
@@ -326,6 +418,18 @@ class VerifyExternalPaymentView(APIView):
         ep.verified_amount = verified_amount
         ep.save()
 
+        # Notify operator their external payment was verified
+        send_notification(
+                user       = ep.operator,
+                category   = 'bills',
+                title      = 'External Payment Verified',
+                message    = (
+                    f'Your external payment of ₦{ep.amount_naira:,.2f} '
+                    f'for period {ep.billing_period} has been verified.'
+                ),
+                related_id = str(ep.id),
+            )
+
         return Response({
             'detail': 'External payment verified.',
             'status': ep.status,
@@ -364,6 +468,19 @@ class RejectExternalPaymentView(APIView):
         ep.verified_by    = request.user
         ep.verified_at    = timezone.now()
         ep.save()
+
+        # Notify operator their external payment was rejected
+        send_notification(
+                user       = ep.operator,
+                category   = 'bills',
+                title      = 'External Payment Rejected',
+                message    = (
+                    f'Your external payment of ₦{ep.amount_naira:,.2f} '
+                    f'for period {ep.billing_period} has been rejected. '
+                    f'Reason: {rejection_note}'
+                ),
+                related_id = str(ep.id),
+            )
 
         return Response({
             'detail': 'External payment rejected.',

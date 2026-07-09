@@ -3,6 +3,8 @@ from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
 
 from .models import Resolution, ResolutionVote, AdvisoryNote
 from .serializers import (
@@ -136,6 +138,41 @@ class PublishResolutionView(APIView):
 
         resolution.status = Resolution.Status.PENDING
         resolution.save()
+
+        # Notify all BOT members to vote
+        bot_users = User.objects.filter(
+            role        = 'bot',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = bot_users,
+            category   = 'general',
+            title      = f'Resolution Ready for Vote — {resolution.res_ref}',
+            message    = (
+                f'Resolution {resolution.res_ref}: "{resolution.title}" '
+                f'is now open for BOT voting. '
+                f'Please log in to cast your vote.'
+            ),
+            related_id = str(resolution.id),
+        )
+
+        # Also notify all advisors to submit their notes
+        advisors = User.objects.filter(
+            role        = 'adv',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = advisors,
+            category   = 'general',
+            title      = f'Resolution Awaiting Advisory Note — {resolution.res_ref}',
+            message    = (
+                f'Resolution {resolution.res_ref}: "{resolution.title}" '
+                f'is pending your advisory note. Please review and submit.'
+            ),
+            related_id = str(resolution.id),
+        )
 
         return Response({
             'detail':  'Resolution published for BOT voting.',
@@ -281,6 +318,27 @@ class FinalizeResolutionView(APIView):
             resolution.signatories     = signatories
             resolution.resolution_note = resolution_note
             resolution.save()
+
+            # Notify all BOT, executives and advisors of the result
+            notify_users = User.objects.filter(
+                role__in    = ['bot', 'is', 'adv'],
+                association = request.user.association,
+                is_active   = True,
+            )
+            result_text = 'PASSED' if final_status == Resolution.Status.PASSED else 'REJECTED'
+            send_bulk_notification(
+                users      = notify_users,
+                category   = 'general',
+                title      = f'Resolution {result_text} — {resolution.res_ref}',
+                message    = (
+                    f'Resolution {resolution.res_ref}: "{resolution.title}" '
+                    f'has been {result_text}. '
+                    f'Yea: {resolution.yea_count} | '
+                    f'Nay: {resolution.nay_count} | '
+                    f'Abstain: {resolution.abstain_count}.'
+                ),
+                related_id = str(resolution.id),
+            )
 
         return Response({
             'detail':          f'Resolution {final_status}.',

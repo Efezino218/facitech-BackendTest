@@ -3,6 +3,8 @@ from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
 
 from .models import (
     Expense, ExpenseApprovalStep,
@@ -40,6 +42,26 @@ class RaiseExpenseView(generics.CreateAPIView):
                 association = request.user.association,
             )
             create_approval_steps(expense)
+
+                        # Notify Treasurer that a new expense needs their approval
+            treasurer_users = User.objects.filter(
+                role        = 'is',
+                ipos        = 'treasurer',
+                association = request.user.association,
+                is_active   = True,
+            )
+            send_bulk_notification(
+                users      = treasurer_users,
+                category   = 'expenses',
+                title      = f'New Expense Awaiting Approval — {expense.expense_ref}',
+                message    = (
+                    f'{request.user.full_name or request.user.email} '
+                    f'has raised expense {expense.expense_ref}: '
+                    f'"{expense.title}" — ₦{expense.amount_naira:,.2f}. '
+                    f'Awaiting your approval.'
+                ),
+                related_id = str(expense.id),
+            )
 
         return Response(
             {
@@ -186,16 +208,77 @@ class ApproveExpenseStepView(APIView):
                 if user_role == 'treasurer':
                     expense.status = ExpenseStatus.PENDING_SECRETARY
                     next_step_msg  = 'Awaiting Secretary General approval.'
+                    # Notify Secretary General
+                    sec_users = User.objects.filter(
+                        role='is', ipos='secretary_general',
+                        association=expense.association, is_active=True,
+                    )
+                    send_bulk_notification(
+                        users      = sec_users,
+                        category   = 'expenses',
+                        title      = f'Expense Awaiting Your Approval — {expense.expense_ref}',
+                        message    = (
+                            f'Expense {expense.expense_ref} "{expense.title}" '
+                            f'(₦{expense.amount_naira:,.2f}) has been approved by '
+                            f'the Treasurer and now requires your approval.'
+                        ),
+                        related_id = str(expense.id),
+                    )
                 elif user_role == 'secretary_general':
                     expense.status = ExpenseStatus.PENDING_PRESIDENT
                     next_step_msg  = 'Awaiting President approval.'
+                    # Notify President
+                    pres_users = User.objects.filter(
+                        role='is', ipos='president',
+                        association=expense.association, is_active=True,
+                    )
+                    send_bulk_notification(
+                        users      = pres_users,
+                        category   = 'expenses',
+                        title      = f'Expense Awaiting Your Approval — {expense.expense_ref}',
+                        message    = (
+                            f'Expense {expense.expense_ref} "{expense.title}" '
+                            f'(₦{expense.amount_naira:,.2f}) has been approved by '
+                            f'the Secretary General and now requires your approval.'
+                        ),
+                        related_id = str(expense.id),
+                    )
                 elif user_role == 'president':
                     if expense.requires_bot:
                         expense.status = ExpenseStatus.PENDING_BOT
                         next_step_msg  = 'Awaiting BOT ratification.'
+                        # Notify BOT members
+                        bot_users = User.objects.filter(
+                            role='bot',
+                            association=expense.association,
+                            is_active=True,
+                        )
+                        send_bulk_notification(
+                            users      = bot_users,
+                            category   = 'expenses',
+                            title      = f'High-Value Expense Requires BOT Ratification — {expense.expense_ref}',
+                            message    = (
+                                f'Expense {expense.expense_ref} "{expense.title}" '
+                                f'(₦{expense.amount_naira:,.2f}) has been approved by all '
+                                f'executives and now requires BOT ratification.'
+                            ),
+                            related_id = str(expense.id),
+                        )
                     else:
                         expense.status = ExpenseStatus.APPROVED
                         next_step_msg  = 'Expense fully approved.'
+                        # Notify raiser that expense is fully approved
+                        send_notification(
+                            user       = expense.raised_by,
+                            category   = 'expenses',
+                            title      = f'Expense Approved — {expense.expense_ref}',
+                            message    = (
+                                f'Your expense {expense.expense_ref} "{expense.title}" '
+                                f'(₦{expense.amount_naira:,.2f}) has been fully approved. '
+                                f'Treasurer can now process payment.'
+                            ),
+                            related_id = str(expense.id),
+                        )
                 expense.save()
 
             else:
@@ -205,6 +288,19 @@ class ApproveExpenseStepView(APIView):
                 expense.status = ExpenseStatus.REJECTED
                 expense.save()
                 next_step_msg = 'Expense rejected.'
+
+                # Notify raiser that expense was rejected
+                send_notification(
+                    user       = expense.raised_by,
+                    category   = 'expenses',
+                    title      = f'Expense Rejected — {expense.expense_ref}',
+                    message    = (
+                        f'Your expense {expense.expense_ref} "{expense.title}" '
+                        f'has been rejected at the {request.user.get_ipos_display()} level. '
+                        f'Note: {note}'
+                    ),
+                    related_id = str(expense.id),
+                )
 
         return Response({
             'detail':       f'Expense {action}d successfully.',
@@ -272,10 +368,37 @@ class BOTRatifyExpenseView(APIView):
                 step.status    = ExpenseApprovalStep.StepStatus.APPROVED
                 expense.status = ExpenseStatus.APPROVED
                 next_step_msg  = 'Expense ratified by BOT and fully approved.'
+
+                # Notify raiser expense is ratified and approved
+                send_notification(
+                    user       = expense.raised_by,
+                    category   = 'expenses',
+                    title      = f'Expense Ratified by BOT — {expense.expense_ref}',
+                    message    = (
+                        f'Your expense {expense.expense_ref} "{expense.title}" '
+                        f'(₦{expense.amount_naira:,.2f}) has been ratified by the '
+                        f'Board of Trustees and is fully approved. '
+                        f'Treasurer can now process payment.'
+                    ),
+                    related_id = str(expense.id),
+                )
             else:
                 step.status    = ExpenseApprovalStep.StepStatus.REJECTED
                 expense.status = ExpenseStatus.REJECTED
                 next_step_msg  = 'Expense rejected by BOT.'
+
+                # Notify raiser expense was rejected by BOT
+                send_notification(
+                    user       = expense.raised_by,
+                    category   = 'expenses',
+                    title      = f'Expense Rejected by BOT — {expense.expense_ref}',
+                    message    = (
+                        f'Your expense {expense.expense_ref} "{expense.title}" '
+                        f'has been rejected by the Board of Trustees. '
+                        f'Note: {note}'
+                    ),
+                    related_id = str(expense.id),
+                )
 
             step.save()
             expense.save()
@@ -327,6 +450,19 @@ class MarkExpensePaidView(APIView):
         expense.paid_by     = request.user
         expense.payment_ref = serializer.validated_data['payment_ref']
         expense.save()
+
+        # Notify raiser expense has been paid
+        send_notification(
+            user       = expense.raised_by,
+            category   = 'expenses',
+            title      = f'Expense Paid — {expense.expense_ref}',
+            message    = (
+                f'Expense {expense.expense_ref} "{expense.title}" '
+                f'(₦{expense.amount_naira:,.2f}) has been marked as paid. '
+                f'Reference: {expense.payment_ref}'
+            ),
+            related_id = str(expense.id),
+        )
 
         return Response({
             'detail':       'Expense marked as paid.',

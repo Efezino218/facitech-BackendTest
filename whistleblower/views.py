@@ -5,6 +5,9 @@ from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
+from django.db import models
 
 from .models import WhistleblowerReport, WhistleblowerUpdate
 from .serializers import (
@@ -41,6 +44,27 @@ class SubmitReportView(APIView):
             category    = serializer.validated_data['category'],
             narrative   = serializer.validated_data['narrative'],
             association = request.user.association,
+        )
+
+        # Notify President and Legal Adviser only
+        # Never reveal who submitted — just that a new report exists
+        privileged_users = User.objects.filter(
+            association = request.user.association,
+            is_active   = True,
+        ).filter(
+            models.Q(role='is', ipos='president') |
+            models.Q(role='adv')
+        )
+        send_bulk_notification(
+            users      = privileged_users,
+            category   = 'general',
+            title      = f'New Anonymous Report — {report.report_ref}',
+            message    = (
+                f'A new anonymous {report.get_category_display()} report '
+                f'({report.report_ref}) has been submitted. '
+                f'Please review in the Whistleblower panel.'
+            ),
+            related_id = str(report.id),
         )
 
         return Response(

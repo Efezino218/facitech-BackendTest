@@ -59,17 +59,19 @@ class PollCreateSerializer(serializers.ModelSerializer):
 
 class PollListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for listing polls."""
-    total_votes      = serializers.ReadOnlyField()
-    yes_percentage   = serializers.ReadOnlyField()
-    no_percentage    = serializers.ReadOnlyField()
-    my_vote          = serializers.SerializerMethodField()
+    total_votes         = serializers.ReadOnlyField()
+    yes_percentage      = serializers.ReadOnlyField()
+    no_percentage       = serializers.ReadOnlyField()
+    participation_rate  = serializers.ReadOnlyField()
+    my_vote             = serializers.SerializerMethodField()
 
     class Meta:
         model  = Poll
         fields = [
-            'id', 'poll_ref', 'question',
+            'id', 'poll_ref', 'question', 'description',
             'status', 'yes_count', 'no_count',
             'total_votes', 'yes_percentage', 'no_percentage',
+            'target_count', 'participation_rate',
             'closes_at', 'my_vote',
         ]
 

@@ -72,7 +72,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     # Panel access list — e.g. ['bills','recon','adverts']
     # President gets 'all'. Others get explicit list.
-    access          = models.JSONField(default=list, blank=True)
+    access          = models.JSONField(default=list, blank=True, null=False)
 
     # Association this user belongs to
     association     = models.ForeignKey(

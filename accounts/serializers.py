@@ -161,12 +161,34 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             )
 
         # Check KYC status for operators
+        # KYC status for operators
         kyc_status = None
         if self.user.role == Role.OPERATOR:
             try:
                 kyc_status = self.user.kyc_application.status
             except Exception:
                 kyc_status = 'not_started'
+
+        # Subscription status for operators
+        subscription_status  = None
+        suspension_reason    = None
+        suspended_since      = None
+        overdue_since        = None
+        amount_due_naira     = None
+
+        if self.user.role == Role.OPERATOR:
+            try:
+                sub = self.user.subscription
+                subscription_status = sub.status
+                if sub.status == 'suspended':
+                    suspension_reason = sub.suspended_reason
+                    suspended_since   = str(sub.suspended_since) if sub.suspended_since else None
+                if sub.status == 'overdue':
+                    overdue_since    = str(sub.overdue_since) if sub.overdue_since else None
+                    amount_due_naira = sub.monthly_fee_naira
+            except Exception:
+                subscription_status = 'kyc'
+                
 
         # Association data
         association_data = None
@@ -178,15 +200,20 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             }
 
         data['user'] = {
-            'id':            str(self.user.id),
-            'email':         self.user.email,
-            'full_name':     self.user.full_name,
-            'role':          self.user.role,
-            'ipos':          self.user.ipos,
-            'access':        self.user.access,
-            'member_number': self.user.member_number,
-            'kyc_status':    kyc_status,
-            'association':   association_data,
+            'id':                   str(self.user.id),
+            'email':                self.user.email,
+            'full_name':            self.user.full_name,
+            'role':                 self.user.role,
+            'ipos':                 self.user.ipos,
+            'access':               self.user.access,
+            'member_number':        self.user.member_number,
+            'kyc_status':           kyc_status,
+            'association':          association_data,
+            'subscription_status':  subscription_status,
+            'suspension_reason':    suspension_reason,
+            'suspended_since':      suspended_since,
+            'overdue_since':        overdue_since,
+            'amount_due_naira':     amount_due_naira,
         }
         return data
 

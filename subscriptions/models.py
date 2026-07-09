@@ -66,6 +66,20 @@ class Subscription(models.Model):
     period_end      = models.DateField(null=True, blank=True)
     renewal_date    = models.DateField(null=True, blank=True)
 
+    # Grace period in days before overdue becomes suspended
+    # Configurable per association via admin
+    grace_period_days   = models.IntegerField(default=7)
+
+    # Track when status changed to overdue
+    overdue_since       = models.DateTimeField(null=True, blank=True)
+
+    # Track suspension
+    suspended_since     = models.DateTimeField(null=True, blank=True)
+    suspended_reason    = models.TextField(blank=True)
+
+    # Track last notification sent
+    last_reminded_at    = models.DateTimeField(null=True, blank=True)
+
     created_at      = models.DateTimeField(auto_now_add=True)
     updated_at      = models.DateTimeField(auto_now=True)
 

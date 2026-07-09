@@ -32,14 +32,18 @@ class ShopSerializer(serializers.ModelSerializer):
 
 class ShopListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for listing shops."""
-    operator_name = serializers.CharField(source='operator.full_name', read_only=True)
+    operator_name  = serializers.CharField(source='operator.full_name', read_only=True)
+    operator_email = serializers.EmailField(source='operator.email', read_only=True)
 
     class Meta:
         model  = Shop
         fields = [
             'id', 'shop_number', 'block', 'floor',
             'trading_name', 'nature', 'electricity_type',
-            'tenure', 'iscooa_position', 'is_active', 'operator_name',
+            'tenure', 'iscooa_position', 'is_active',
+            'operator',          # ← UUID
+            'operator_name',     # ← full name
+            'operator_email',    # ← email (bonus — useful for display)
         ]
 
 

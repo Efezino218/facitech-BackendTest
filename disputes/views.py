@@ -5,6 +5,8 @@ from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
 
 from .models import Dispute, DisputeUpdate
 from .serializers import (
@@ -53,6 +55,24 @@ class RaiseDisputeView(generics.CreateAPIView):
         )
         serializer.is_valid(raise_exception=True)
         dispute = serializer.save(operator=request.user)
+
+        # Notify all exco members about new dispute
+        exco_users = User.objects.filter(
+            role        = 'is',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = exco_users,
+            category   = 'disputes',
+            title      = f'New Dispute Raised — {dispute.dispute_ref}',
+            message    = (
+                f'Operator {request.user.full_name or request.user.email} '
+                f'has raised a {dispute.get_category_display()} dispute: '
+                f'"{dispute.subject}". Priority: {dispute.get_priority_display()}.'
+            ),
+            related_id = str(dispute.id),
+        )
         return Response(
             {
                 'detail':       'Dispute raised successfully. ISCOOA will review within 48 hours.',
@@ -167,6 +187,19 @@ class RespondToDisputeView(APIView):
                 dispute.resolved_at = timezone.now()
 
             dispute.save()
+
+            # Notify operator about the dispute update
+            send_notification(
+                user       = dispute.operator,
+                category   = 'disputes',
+                title      = f'Dispute Update — {dispute.dispute_ref}',
+                message    = (
+                    f'Your dispute "{dispute.subject}" has been updated. '
+                    f'New status: {dispute.get_status_display()}. '
+                    f'Response: {response}'
+                ),
+                related_id = str(dispute.id),
+            )
 
             DisputeUpdate.objects.create(
                 dispute    = dispute,

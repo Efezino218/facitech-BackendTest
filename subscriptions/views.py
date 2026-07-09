@@ -3,6 +3,7 @@ from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from notifications.utils import send_notification
 
 from shops.models import Shop
 from .models import Subscription, SubscriptionPayment
@@ -269,4 +270,149 @@ class CommissionSummaryView(APIView):
             'iprolance_share_naira':    (totals['total_iprolance'] or 0) / 100,
             'payment_count':            payments.count(),
             'period_filter':            period or 'all time',
+        })
+    
+
+
+
+class OverdueSubscriptionsView(generics.ListAPIView):
+    """
+    GET /api/v1/subscriptions/overdue/
+    Treasurer sees all overdue subscriptions for their association.
+    """
+    serializer_class   = SubscriptionListSerializer
+    permission_classes = [IsTreasurer]
+
+    def get_queryset(self):
+        return Subscription.objects.filter(
+            operator__association = self.request.user.association,
+            status__in            = [
+                Subscription.Status.OVERDUE,
+                Subscription.Status.SUSPENDED,
+            ]
+        ).order_by('overdue_since')
+
+
+class SuspendSubscriptionView(APIView):
+    """
+    POST /api/v1/subscriptions/<id>/suspend/
+    Treasurer manually suspends an operator's subscription.
+    Used when operator refuses to pay after reminders.
+    """
+    permission_classes = [IsTreasurer]
+
+    def post(self, request, pk):
+        try:
+            subscription = Subscription.objects.get(
+                pk                    = pk,
+                operator__association = request.user.association,
+            )
+        except Subscription.DoesNotExist:
+            return Response(
+                {'detail': 'Subscription not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if subscription.status == Subscription.Status.SUSPENDED:
+            return Response(
+                {'detail': 'Subscription is already suspended.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reason = request.data.get('reason', '')
+        if not reason:
+            return Response(
+                {'detail': 'A suspension reason is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        subscription.status           = Subscription.Status.SUSPENDED
+        subscription.suspended_since  = timezone.now()
+        subscription.suspended_reason = reason
+        subscription.save()
+
+        # Notify operator
+        try:
+            assoc_name = subscription.operator.association.name
+        except Exception:
+            assoc_name = 'ISCOOA'
+
+        send_notification(
+            user     = subscription.operator,
+            category = 'subscriptions',
+            title    = 'Account Suspended',
+            message  = (
+                f'Your {assoc_name} Facitech account has been suspended. '
+                f'Reason: {reason}. '
+                f'Please contact {assoc_name} to resolve this.'
+            ),
+        )
+
+        return Response({
+            'detail':           'Subscription suspended.',
+            'operator_email':   subscription.operator.email,
+            'suspended_since':  subscription.suspended_since,
+            'reason':           subscription.suspended_reason,
+        })
+
+
+class LiftSuspensionView(APIView):
+    """
+    POST /api/v1/subscriptions/<id>/lift-suspension/
+    Treasurer lifts a suspension after operator pays.
+    Resets renewal date from today.
+    """
+    permission_classes = [IsTreasurer]
+
+    def post(self, request, pk):
+        try:
+            subscription = Subscription.objects.get(
+                pk                    = pk,
+                operator__association = request.user.association,
+            )
+        except Subscription.DoesNotExist:
+            return Response(
+                {'detail': 'Subscription not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if subscription.status != Subscription.Status.SUSPENDED:
+            return Response(
+                {'detail': 'This subscription is not suspended.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        import datetime
+        today        = timezone.now().date()
+        new_renewal  = today + datetime.timedelta(days=30)
+
+        subscription.status           = Subscription.Status.ACTIVE
+        subscription.suspended_since  = None
+        subscription.suspended_reason = ''
+        subscription.overdue_since    = None
+        subscription.last_reminded_at = None
+        subscription.renewal_date     = new_renewal
+        subscription.save()
+
+        # Notify operator
+        try:
+            assoc_name = subscription.operator.association.name
+        except Exception:
+            assoc_name = 'ISCOOA'
+
+        send_notification(
+            user     = subscription.operator,
+            category = 'subscriptions',
+            title    = 'Account Reinstated',
+            message  = (
+                f'Your {assoc_name} Facitech account has been reinstated. '
+                f'Your next payment is due on {new_renewal}.'
+            ),
+        )
+
+        return Response({
+            'detail':         'Suspension lifted. Account is now active.',
+            'operator_email': subscription.operator.email,
+            'new_renewal_date': new_renewal,
+            'status':         subscription.status,
         })

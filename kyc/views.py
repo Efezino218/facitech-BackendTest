@@ -6,6 +6,8 @@ from rest_framework import generics, status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from audit.models import log_action
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
 
 from .models import (
     KYCApplication, KYCReviewNote, KYCPersonal, KYCBusiness,
@@ -54,6 +56,25 @@ class KYCStartView(APIView):
             status      = KYCStatus.DRAFT,           # ← changed from SUBMITTED
             association = request.user.association,
         )
+
+
+        # Notify all association executives that a new KYC has been started
+        exco_users = User.objects.filter(
+            role        = 'is',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = exco_users,
+            category   = 'kyc',
+            title      = 'New KYC Application Started',
+            message    = (
+                f'{request.user.full_name or request.user.email} '
+                f'has started a KYC application ({application.kyc_id}).'
+            ),
+            related_id = str(application.id),
+        )
+
         return Response(
             {
                 'kyc_id':  application.kyc_id,
@@ -305,6 +326,25 @@ class KYCStepDeclarationView(APIView):
         application.status = KYCStatus.SUBMITTED
         application.save()
 
+
+        # Notify all association executives about new submission
+        exco_users = User.objects.filter(
+            role        = 'is',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = exco_users,
+            category   = 'kyc',
+            title      = f'KYC Application Submitted — {application.kyc_id}',
+            message    = (
+                f'{request.user.full_name or request.user.email} '
+                f'has submitted their KYC application ({application.kyc_id}) '
+                f'and is awaiting review.'
+            ),
+            related_id = str(application.id),
+        )
+
         return Response({
             'detail':  'KYC application submitted successfully. ISCOOA will review within 48 hours.',
             'kyc_id':  application.kyc_id,
@@ -404,6 +444,18 @@ class KYCApproveView(APIView):
             application.approved_by   = request.user
             application.approved_date = timezone.now()
             application.save()
+
+            # Notify operator their KYC was approved
+            send_notification(
+                user       = application.operator,
+                category   = 'kyc',
+                title      = 'KYC Application Approved',
+                message    = (
+                    f'Congratulations! Your KYC application ({application.kyc_id}) '
+                    f'has been approved. Your member number is {member_number}.'
+                ),
+                related_id = str(application.id),
+            )
 
             # Also update the operator's user record
             application.operator.member_number = member_number
@@ -526,6 +578,18 @@ class KYCRequestDocsView(APIView):
         application.docs_note = note
         application.save()
 
+        # Notify operator that additional documents are required
+        send_notification(
+            user       = application.operator,
+            category   = 'kyc',
+            title      = 'Additional Documents Required',
+            message    = (
+                f'Your KYC application ({application.kyc_id}) requires '
+                f'additional documents. Note from reviewer: {note}'
+            ),
+            related_id = str(application.id),
+        )
+
         KYCReviewNote.objects.create(
             application=application,
             reviewed_by=request.user,
@@ -561,6 +625,18 @@ class KYCRejectView(APIView):
 
         application.status = KYCStatus.REJECTED
         application.save()
+
+        # Notify operator their KYC was rejected
+        send_notification(
+            user       = application.operator,
+            category   = 'kyc',
+            title      = 'KYC Application Rejected',
+            message    = (
+                f'Your KYC application ({application.kyc_id}) has been rejected. '
+                f'Reason: {note}'
+            ),
+            related_id = str(application.id),
+        )
 
         KYCReviewNote.objects.create(
             application=application,

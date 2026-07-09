@@ -2,6 +2,8 @@ from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
 
 from .models import Advert
 from .serializers import (
@@ -48,6 +50,26 @@ class SubmitAdvertView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         advert = serializer.save(operator=request.user)
+
+        # Notify Secretary General about new advert submission
+        sec_users = User.objects.filter(
+            role        = 'is',
+            ipos        = 'secretary_general',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = sec_users,
+            category   = 'adverts',
+            title      = 'New Advert Submission',
+            message    = (
+                f'Operator {request.user.full_name or request.user.email} '
+                f'has submitted a new {advert.get_category_display()} advert: '
+                f'"{advert.headline}". Fee: ₦{advert.fee_naira:,.2f}. '
+                f'Awaiting your approval.'
+            ),
+            related_id = str(advert.id),
+        )
         return Response(
             {
                 'detail':       'Advert submitted successfully. Awaiting Secretary General approval.',
@@ -177,6 +199,20 @@ class ApproveAdvertView(APIView):
         advert.reviewed_by  = request.user
         advert.reviewed_at  = now
         advert.save()
+
+        # Notify operator their advert was approved
+        send_notification(
+            user       = advert.operator,
+            category   = 'adverts',
+            title      = 'Advert Approved — Now Live',
+            message    = (
+                f'Your advert "{advert.headline}" has been approved '
+                f'and is now live on the marketplace. '
+                f'It will expire on '
+                f'{advert.expires_at.strftime("%d %b %Y") if advert.expires_at else "TBD"}.'
+            ),
+            related_id = str(advert.id),
+        )
 
         return Response({
             'detail':           'Advert approved and now live.',

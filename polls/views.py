@@ -3,6 +3,8 @@ from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
 
 from .models import Poll, Vote
 from .serializers import (
@@ -234,6 +236,26 @@ class ClosePollView(APIView):
         poll.closes_at = timezone.now()
         poll.save()
 
+
+        # Notify operators who voted that poll is closed with final results
+        voted_operators = User.objects.filter(
+            votes__poll = poll,
+            is_active   = True,
+        ).distinct()
+        send_bulk_notification(
+            users      = voted_operators,
+            category   = 'polls',
+            title      = f'Poll Closed — {poll.poll_ref}',
+            message    = (
+                f'The poll "{poll.question}" has been closed. '
+                f'Final result: Yes {poll.yes_percentage}% '
+                f'({poll.yes_count} votes) vs No {poll.no_percentage}% '
+                f'({poll.no_count} votes). '
+                f'Total votes: {poll.total_votes}.'
+            ),
+            related_id = str(poll.id),
+        )
+
         return Response({
             'detail':           'Poll closed successfully.',
             'poll_ref':         poll.poll_ref,
@@ -276,6 +298,24 @@ class PublishPollView(APIView):
         poll.status   = Poll.Status.ACTIVE
         poll.opens_at = timezone.now()
         poll.save()
+
+        # Notify all operators about new active poll
+        operators = User.objects.filter(
+            role        = 'op',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = operators,
+            category   = 'polls',
+            title      = f'New Poll — {poll.poll_ref}',
+            message    = (
+                f'A new poll is now open for voting: '
+                f'"{poll.question}" '
+                f'Closing: {poll.closes_at.strftime("%d %b %Y") if poll.closes_at else "TBD"}.'
+            ),
+            related_id = str(poll.id),
+        )
 
         return Response({
             'detail':   'Poll published and now active.',

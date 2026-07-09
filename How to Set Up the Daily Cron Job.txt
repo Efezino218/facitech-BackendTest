@@ -1,0 +1,12 @@
+#######################################################################################
+    How to Set Up the Daily Cron Job on Railway/Render After Deployment
+    Cron Job work For The Subscription Model
+########################################################################################
+Once deployed add this to your Railway/Render or any Hosting cron configuration:
+    0 0 * * * cd /app && python manage.py check_overdue_subscriptions
+
+
+
+###### To Test the Management Command Manually ######
+    On The Root dir where you have manage.py run the command below: 
+        . python manage.py check_overdue_subscriptions

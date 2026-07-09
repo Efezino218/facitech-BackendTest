@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
+from django.db import models as django_models
 from .models import User, Role
 from .serializers import (
     UserSerializer,
@@ -144,7 +145,9 @@ class MeView(APIView):
     """
     GET /api/v1/auth/me/
     Returns the currently logged-in user profile.
-    Also returns KYC status for operators.
+    For operators also returns:
+    - KYC status
+    - Subscription status and suspension reason
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -152,16 +155,51 @@ class MeView(APIView):
         serializer = UserSerializer(request.user)
         data = serializer.data
 
-        # Add KYC status for operators
         if request.user.role == Role.OPERATOR:
+
+            # ── KYC status ───────────────────────────────────────────
             try:
                 kyc = request.user.kyc_application
-                data['kyc_status']  = kyc.status
-                data['kyc_id']      = kyc.kyc_id
+                data['kyc_status']    = kyc.status
+                data['kyc_id']        = kyc.kyc_id
                 data['member_number'] = kyc.member_number
             except Exception:
                 data['kyc_status']  = 'not_started'
                 data['kyc_id']      = None
+
+            # ── Subscription status and suspension reason ─────────────
+            # Frontend uses this to redirect to suspended page
+            # and display the suspension reason
+            try:
+                subscription = request.user.subscription
+                data['subscription_status']   = subscription.status
+                data['subscription_month']    = subscription.current_month
+                data['renewal_date']          = subscription.renewal_date
+
+                # Only include suspension details when actually suspended
+                if subscription.status == 'suspended':
+                    data['suspension_reason']  = subscription.suspended_reason
+                    data['suspended_since']    = subscription.suspended_since
+                else:
+                    data['suspension_reason']  = None
+                    data['suspended_since']    = None
+
+                # Include overdue details when overdue
+                if subscription.status == 'overdue':
+                    data['overdue_since']      = subscription.overdue_since
+                    data['amount_due_naira']   = subscription.monthly_fee_naira
+                else:
+                    data['overdue_since']      = None
+                    data['amount_due_naira']   = None
+
+            except Exception:
+                data['subscription_status']  = 'kyc'
+                data['subscription_month']   = 1
+                data['renewal_date']         = None
+                data['suspension_reason']    = None
+                data['suspended_since']      = None
+                data['overdue_since']        = None
+                data['amount_due_naira']     = None
 
         return Response(data)
 
@@ -315,3 +353,84 @@ class ReactivateUserView(APIView):
             'detail':         f'Account {target_user.email} has been reactivated.',
             'reactivated_by': request.user.email,
         })
+    
+
+
+
+
+@extend_schema(tags=['Auth'])
+class AssociationMembersView(generics.ListAPIView):
+    """
+    GET /api/v1/auth/members/
+    Association Executive sees all operators in their association.
+    Filter by ?is_active=true|false
+    Filter by ?kyc_status=approved|submitted|draft|rejected
+    Filter by ?search=name or email
+    """
+    serializer_class   = UserSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Only ISCOOA Exec, BOT, Advisor and Super Admin
+        # can access this endpoint
+        if user.role not in ['is', 'bot', 'adv', 'sa']:
+            return User.objects.none()
+
+        # Super Admin sees all operators across all associations
+        if user.role == 'sa':
+            qs = User.objects.filter(role='op')
+        else:
+            # Everyone else sees only their own association's operators
+            qs = User.objects.filter(
+                role        = 'op',
+                association = user.association,
+            )
+
+        # Filter by active status
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active.lower() == 'true')
+
+        # Filter by KYC status
+        kyc_status = self.request.query_params.get('kyc_status')
+        if kyc_status:
+            qs = qs.filter(kyc_application__status=kyc_status)
+
+        # Search by name or email
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                django_models.Q(email__icontains=search) |
+                django_models.Q(first_name__icontains=search) |
+                django_models.Q(last_name__icontains=search) |
+                django_models.Q(member_number__icontains=search)
+            )
+
+        return qs.order_by('first_name', 'last_name')
+
+
+@extend_schema(tags=['Auth'])
+class MemberDetailView(generics.RetrieveAPIView):
+    """
+    GET /api/v1/auth/members/<id>/
+    Association Executive views full profile of a single operator.
+    Scoped to their own association.
+    """
+    serializer_class   = UserSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if user.role not in ['is', 'bot', 'adv', 'sa']:
+            return User.objects.none()
+
+        if user.role == 'sa':
+            return User.objects.filter(role='op')
+
+        return User.objects.filter(
+            role        = 'op',
+            association = user.association,
+        )
