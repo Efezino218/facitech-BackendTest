@@ -9,6 +9,7 @@ from .serializers import (
     PublicationListSerializer,
     AnnouncementSerializer, AnnouncementCreateSerializer,
 )
+from rest_framework.permissions import IsAuthenticated
 from .permissions import (
     IsOperator, IsSecretaryOrPresident, IsIscooaExecOrOperator
 )
@@ -49,24 +50,70 @@ class CreatePublicationView(generics.CreateAPIView):
 class AllPublicationsView(generics.ListAPIView):
     """
     GET /api/v1/publications/
-    Secretary General sees all publications.
+    All authenticated users can view publications
+    but only those targeted at their role.
+
+    Secretary General and President see ALL publications
+    (they need to manage them).
+
+    Other roles see only publications sent to them:
+    - Operators (op)       → all_operators or all or defaulters
+    - Executives (is)      → exco_members or all
+    - BOT (bot)            → bot_members or all
+    - Advisors (adv)       → all only
+    - Super Admin (sa)     → all publications
+
+    Only SENT publications are shown to non-secretary roles.
+    Secretary General and President also see drafts.
+
     Filter by ?pub_type=email|sms|announcement
     Filter by ?status=draft|sent|scheduled|pending_approval
     """
     serializer_class   = PublicationListSerializer
-    permission_classes = [IsSecretaryOrPresident]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        user = self.request.user
+
+        # Base queryset scoped to this user's association
         qs = Publication.objects.filter(
-            association = self.request.user.association
+            association = user.association
         )
+
+        # Secretary General and President see everything
+        # including drafts — they manage publications
+        if user.role == 'is' and user.ipos in ['secretary_general', 'president']:
+            pass  # No additional filtering — see all
+
+        # Super Admin sees everything across all associations
+        elif user.role == 'sa':
+            qs = Publication.objects.all()
+
+        # All other roles see only SENT publications
+        # targeted at their specific role
+        else:
+            qs = qs.filter(status=Publication.Status.SENT)
+
+            # Map each role to the target groups they should see
+            role_target_map = {
+                'op':  ['all_operators', 'all', 'defaulters'],
+                'is':  ['exco_members', 'all'],
+                'bot': ['bot_members', 'all'],
+                'adv': ['all'],
+            }
+            allowed_targets = role_target_map.get(user.role, ['all'])
+            qs = qs.filter(target_group__in=allowed_targets)
+
+        # Optional filters from query params
         pub_type = self.request.query_params.get('pub_type')
         if pub_type:
             qs = qs.filter(pub_type=pub_type)
+
         pub_status = self.request.query_params.get('status')
         if pub_status:
             qs = qs.filter(status=pub_status)
-        return qs
+
+        return qs.order_by('-created_at')
 
 
 @extend_schema(tags=['Publications'])
@@ -118,18 +165,39 @@ class SendPublicationView(APIView):
             )
 
         # Count recipients based on target group
-        from accounts.models import User
+        from accounts.models import User as UserModel
+        from notifications.utils import send_bulk_notification
+
         assoc = publication.association
-        if publication.target_group == 'all_operators':
-            recipient_count = User.objects.filter(role='op', is_active=True, association=assoc).count()
-        elif publication.target_group == 'exco_members':
-            recipient_count = User.objects.filter(role='is', is_active=True, association=assoc).count()
-        elif publication.target_group == 'bot_members':
-            recipient_count = User.objects.filter(role='bot', is_active=True, association=assoc).count()
-        elif publication.target_group == 'all':
-            recipient_count = User.objects.filter(is_active=True, association=assoc).count()
-        else:
-            recipient_count = User.objects.filter(role='op', is_active=True, association=assoc).count()
+
+        # ── Map target_group to the correct queryset ───────────────────
+        target_map = {
+            'all_operators': UserModel.objects.filter(
+                role='op', is_active=True, association=assoc
+            ),
+            'exco_members': UserModel.objects.filter(
+                role='is', is_active=True, association=assoc
+            ),
+            'bot_members': UserModel.objects.filter(
+                role='bot', is_active=True, association=assoc
+            ),
+            'all': UserModel.objects.filter(
+                is_active=True, association=assoc
+            ),
+            # defaulters — operators with overdue/suspended subscriptions
+            'defaulters': UserModel.objects.filter(
+                role='op', is_active=True, association=assoc,
+                subscription__status__in=['overdue', 'suspended'],
+            ),
+        }
+
+        target_users = target_map.get(
+            publication.target_group,
+            # Safe fallback — all operators if unknown target group
+            UserModel.objects.filter(role='op', is_active=True, association=assoc)
+        )
+
+        recipient_count = target_users.count()
 
         # In production: call Postmark for email or Termii for SMS here
         publication.status          = Publication.Status.SENT
@@ -137,16 +205,9 @@ class SendPublicationView(APIView):
         publication.recipient_count = recipient_count
         publication.save()
 
-        # Send in-app notifications to all operators
-        from accounts.models import User as UserModel
-        from notifications.utils import send_bulk_notification
-        operators = UserModel.objects.filter(
-            role        = 'op',
-            is_active   = True,
-            association = publication.association,
-        )
+        # Send in-app notification to the correct target group only
         send_bulk_notification(
-            users      = operators,
+            users      = target_users,
             category   = 'general',
             title      = publication.subject,
             message    = publication.content[:200],
@@ -182,6 +243,31 @@ class CreateAnnouncementView(generics.CreateAPIView):
             status       = Announcement.Status.PUBLISHED,
             publish_date = timezone.now(),
         )
+
+        # Notify all operators about the new announcement
+        # Urgent announcements get higher priority title
+        from notifications.utils import send_bulk_notification
+        from accounts.models import User
+
+        priority_label = ''
+        if announcement.priority == 'urgent':
+            priority_label = '🚨 URGENT — '
+        elif announcement.priority == 'high':
+            priority_label = '⚠️ '
+
+        operators = User.objects.filter(
+            role        = 'op',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = operators,
+            category   = 'general',
+            title      = f'{priority_label}{announcement.title}',
+            message    = announcement.content[:200],
+            related_id = str(announcement.id),
+        )
+
         return Response(
             {
                 'detail':     'Announcement created and published.',

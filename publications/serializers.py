@@ -62,7 +62,7 @@ class PublicationListSerializer(serializers.ModelSerializer):
         model  = Publication
         fields = [
             'id', 'pub_ref', 'pub_type', 'pub_type_display',
-            'subject', 'target_group', 'status', 'status_display',
+            'subject', 'content', 'target_group', 'status', 'status_display',
             'recipient_count', 'sent_at', 'created_at',
         ]
 
