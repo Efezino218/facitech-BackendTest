@@ -181,12 +181,20 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME', 'iscooa_facitech'),
-        'USER': os.getenv('DB_USER', 'postgres'),
-        'PASSWORD': os.getenv('DB_PASSWORD', ''),
-        'HOST': os.getenv('DB_HOST', 'localhost'),
+        'NAME': os.getenv('DB_NAME', 'postgres'),
+        'USER': os.getenv('DB_USER', 'postgres.nopnqomivvhljmxycoid'),
+        'PASSWORD': os.getenv('DB_PASSWORD', 'Q2E-Cm99kGVjZ$'),
+        'HOST': os.getenv('DB_HOST', 'aws-0-eu-west-1.pooler.supabase.com'),
         'PORT': os.getenv('DB_PORT', '5432'),
-    }
+    },
+    # 'default': {
+    #     'ENGINE': 'django.db.backends.postgresql',
+    #     'NAME': os.getenv('DB_NAME', 'iscooa_facitech'),
+    #     'USER': os.getenv('DB_USER', 'postgres'),
+    #     'PASSWORD': os.getenv('DB_PASSWORD', ''),
+    #     'HOST': os.getenv('DB_HOST', 'localhost'),
+    #     'PORT': os.getenv('DB_PORT', '5432'),
+    # }
 }
 
 import dj_database_url
@@ -307,7 +315,7 @@ SIMPLE_JWT = {
 # ─── CORS ─────────────────────────────────────────────────────────────────────
 CORS_ALLOWED_ORIGINS = os.getenv(
     'CORS_ALLOWED_ORIGINS',
-    'http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://127.0.0.1:3000'
+    'http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://127.0.0.1:3000,https://facitech.netlify.app'
 ).split(',')
 
 
