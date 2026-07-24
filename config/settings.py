@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     'whistleblower',
     'enforcement',
     'audit',
+    'revenue',
     'reconciliation',
     'associations',
 ]
@@ -319,6 +320,11 @@ CORS_ALLOWED_ORIGINS = os.getenv(
 ).split(',')
 
 
+# ─── PAYSTACK ─────────────────────────────────────────────────────────────────
+PAYSTACK_SECRET_KEY    = os.getenv('PAYSTACK_SECRET_KEY', '')
+PAYSTACK_PUBLIC_KEY    = os.getenv('PAYSTACK_PUBLIC_KEY', '')
+PAYSTACK_CALLBACK_URL  = os.getenv('PAYSTACK_CALLBACK_URL', 'http://127.0.0.1:8000/api/v1/wallet/paystack/callback/')
+PAYSTACK_WEBHOOK_URL   = os.getenv('PAYSTACK_WEBHOOK_URL', 'http://127.0.0.1:8000/api/v1/wallet/paystack/webhook/')
 
 
 # Password validation

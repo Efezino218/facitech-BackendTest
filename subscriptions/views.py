@@ -11,8 +11,10 @@ from .serializers import (
     SubscriptionSerializer, SubscriptionListSerializer,
     CycleSelectSerializer,
 )
-from .permissions import IsOperator, IsTreasurer, IsIscooaExec
+from .permissions import IsOperator, IsTreasurerOrPresident, IsIscooaExec
 from drf_spectacular.utils import extend_schema
+from revenue.utils import distribute_revenue
+from revenue.models import RevenueDistribution
 
 
 # ─── OPERATOR VIEWS ───────────────────────────────────────────────────────────
@@ -154,9 +156,57 @@ class PaySubscriptionView(APIView):
         # Determine billing period string
         period = timezone.now().strftime('%Y-%m')
 
+        # ── Get or create wallet ──────────────────────────────────────
+        from wallet.models import Wallet
+        wallet, _ = Wallet.objects.get_or_create(
+            operator = request.user,
+            defaults = {
+                'balance': 0,
+                'coolmfb_account_number': f"COOL{request.user.id.hex[:10].upper()}",
+                'coolmfb_account_name':   request.user.full_name or request.user.email,
+            }
+        )
+
+        # ── Check balance before touching anything ────────────────────
+        if wallet.balance < amount:
+            return Response(
+                {
+                    'detail': (
+                        f'Insufficient wallet balance. '
+                        f'Available: ₦{wallet.balance_naira:,.2f}, '
+                        f'Required: ₦{amount / 100:,.2f}. '
+                        f'Please top up your wallet.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         with transaction.atomic():
-            # In production: call Cool MFB wallet API here
-            # For now we simulate a successful payment
+            payment_ref = (
+                f"COOLMFB-SUB-"
+                f"{request.user.member_number or request.user.id.hex[:8].upper()}-"
+                f"{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            )
+
+            # ── Step 1: Debit wallet first ────────────────────────────
+            try:
+                wallet.debit(
+                    amount_kobo = amount,
+                    description = (
+                        f'Subscription payment — {cycle} cycle, '
+                        f'{subscription.shop_count} shop(s), '
+                        f'Period: {period}'
+                    ),
+                    method = 'wallet',
+                    ref    = payment_ref,
+                )
+            except ValueError as e:
+                return Response(
+                    {'detail': str(e)},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ── Step 2: Record subscription payment ───────────────────
             payment = SubscriptionPayment.objects.create(
                 subscription  = subscription,
                 operator      = request.user,
@@ -167,30 +217,64 @@ class PaySubscriptionView(APIView):
                 iscooa_cut    = iscooa_cut,
                 iprolance_cut = iprolance_cut,
                 status        = SubscriptionPayment.Status.PAID,
-                payment_ref   = f"COOLMFB-SUB-{request.user.member_number}-{timezone.now().strftime('%Y%m%d%H%M%S')}",
+                payment_ref   = payment_ref,
                 paid_at       = timezone.now(),
             )
 
-            # Advance subscription month
+            # ── Step 3: Advance subscription ──────────────────────────
             subscription.current_month += 1
             subscription.status         = Subscription.Status.ACTIVE
-            subscription.renewal_date   = timezone.now().date().replace(
-                month=timezone.now().month + 1
-                if timezone.now().month < 12
-                else 1
+
+            # Set next renewal date properly
+            from dateutil.relativedelta import relativedelta
+            if cycle == 'monthly':
+                months_forward = 1
+            elif cycle == 'quarterly':
+                months_forward = 3
+            else:
+                months_forward = 12
+
+            subscription.renewal_date = (
+                timezone.now().date() +
+                relativedelta(months=months_forward)
             )
             subscription.save()
 
+        # ── Distribute revenue to association and platform ──────────
+        try:
+            distribute_revenue(
+                association       = request.user.association,
+                operator          = request.user,
+                total_amount_kobo = amount,
+                payment_type      = RevenueDistribution.PaymentType.SUBSCRIPTION,
+                source_ref        = payment.payment_ref,
+                note              = (
+                    f'Subscription payment — {cycle} cycle, '
+                    f'{subscription.shop_count} shop(s), '
+                    f'Month {subscription.current_month}'
+                ),
+            )
+        except Exception as e:
+            # Never fail the payment if revenue distribution fails
+            # Log and continue — can be reconciled manually
+            import logging
+            logging.getLogger(__name__).error(
+                f'Revenue distribution failed for subscription '
+                f'{payment.payment_ref}: {e}'
+            )        
+
         return Response({
-            'detail':               'Subscription payment successful.',
-            'period':               period,
-            'cycle':                cycle,
-            'shop_count':           subscription.shop_count,
-            'amount_naira':         payment.amount_naira,
-            'iscooa_cut_naira':     payment.iscooa_cut_naira,
-            'iprolance_cut_naira':  payment.iprolance_cut_naira,
-            'payment_ref':          payment.payment_ref,
-            'current_month':        subscription.current_month,
+            'detail':                   'Subscription payment successful.',
+            'period':                   period,
+            'cycle':                    cycle,
+            'shop_count':               subscription.shop_count,
+            'amount_naira':             payment.amount_naira,
+            'iscooa_cut_naira':         payment.iscooa_cut_naira,
+            'iprolance_cut_naira':      payment.iprolance_cut_naira,
+            'payment_ref':              payment.payment_ref,
+            'current_month':            subscription.current_month,
+            'new_wallet_balance_naira': wallet.balance_naira,
+            'next_renewal_date':        subscription.renewal_date,
             'billing_note': (
                 f'Payment covers {subscription.shop_count} shop(s). '
                 f'All shops active at payment time are included.'
@@ -208,7 +292,7 @@ class AllSubscriptionsView(generics.ListAPIView):
     Filter by ?status=active|kyc|overdue|suspended
     """
     serializer_class   = SubscriptionListSerializer
-    permission_classes = [IsTreasurer]
+    permission_classes = [IsTreasurerOrPresident]
 
     def get_queryset(self):
         qs = Subscription.objects.filter(
@@ -228,7 +312,7 @@ class SubscriptionDetailAdminView(generics.RetrieveAPIView):
     scoped to their own association.
     """
     serializer_class   = SubscriptionSerializer
-    permission_classes = [IsTreasurer]
+    permission_classes = [IsTreasurerOrPresident]
 
     def get_queryset(self):
         return Subscription.objects.filter(
@@ -243,7 +327,7 @@ class CommissionSummaryView(APIView):
     Treasurer sees total subscription commissions.
     Breaks down ISCOOA 20% and Iprolance 80%.
     """
-    permission_classes = [IsTreasurer]
+    permission_classes = [IsTreasurerOrPresident]
 
     def get(self, request):
         from django.db.models import Sum
@@ -281,7 +365,7 @@ class OverdueSubscriptionsView(generics.ListAPIView):
     Treasurer sees all overdue subscriptions for their association.
     """
     serializer_class   = SubscriptionListSerializer
-    permission_classes = [IsTreasurer]
+    permission_classes = [IsTreasurerOrPresident]
 
     def get_queryset(self):
         return Subscription.objects.filter(
@@ -299,7 +383,7 @@ class SuspendSubscriptionView(APIView):
     Treasurer manually suspends an operator's subscription.
     Used when operator refuses to pay after reminders.
     """
-    permission_classes = [IsTreasurer]
+    permission_classes = [IsTreasurerOrPresident]
 
     def post(self, request, pk):
         try:
@@ -362,7 +446,7 @@ class LiftSuspensionView(APIView):
     Treasurer lifts a suspension after operator pays.
     Resets renewal date from today.
     """
-    permission_classes = [IsTreasurer]
+    permission_classes = [IsTreasurerOrPresident]
 
     def post(self, request, pk):
         try:

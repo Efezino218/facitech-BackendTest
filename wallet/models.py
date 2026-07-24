@@ -138,3 +138,65 @@ class WalletTransaction(models.Model):
     @property
     def amount_naira(self):
         return self.amount / 100
+
+
+
+
+class PaystackTransaction(models.Model):
+    """
+    Tracks Paystack top-up transactions.
+    Created when operator initializes a top-up.
+    Updated when webhook confirms payment.
+    Prevents double-crediting on duplicate webhooks.
+    """
+
+    class Status(models.TextChoices):
+        PENDING   = 'pending',   'Pending'
+        SUCCESS   = 'success',   'Success'
+        FAILED    = 'failed',    'Failed'
+        ABANDONED = 'abandoned', 'Abandoned'
+
+    id          = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    operator    = models.ForeignKey(
+                    User,
+                    on_delete=models.CASCADE,
+                    related_name='paystack_transactions'
+                  )
+    wallet      = models.ForeignKey(
+                    Wallet,
+                    on_delete=models.CASCADE,
+                    related_name='paystack_transactions'
+                  )
+
+    reference   = models.CharField(max_length=100, unique=True)
+    # Paystack transaction reference — unique per transaction
+
+    amount      = models.BigIntegerField()
+    # Amount in kobo
+
+    status      = models.CharField(
+                    max_length=15,
+                    choices=Status.choices,
+                    default=Status.PENDING
+                  )
+
+    # Set to True after wallet is credited
+    # Prevents double-crediting on duplicate webhooks
+    wallet_credited = models.BooleanField(default=False)
+
+    paystack_data   = models.JSONField(default=dict, blank=True)
+    # Full Paystack response stored for audit
+
+    created_at  = models.DateTimeField(auto_now_add=True)
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'paystack_transactions'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.reference} — {self.operator.email} ₦{self.amount/100} ({self.status})"
+
+    @property
+    def amount_naira(self):
+        return self.amount / 100

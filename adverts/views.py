@@ -11,6 +11,8 @@ from .serializers import (
 )
 from .permissions import IsOperator, IsSecretaryGeneral, IsIscooaExec
 from drf_spectacular.utils import extend_schema
+from revenue.utils import distribute_revenue
+from revenue.models import RevenueDistribution
 
 
 # ─── OPERATOR ADVERT VIEWS ────────────────────────────────────────────────────
@@ -199,6 +201,25 @@ class ApproveAdvertView(APIView):
         advert.reviewed_by  = request.user
         advert.reviewed_at  = now
         advert.save()
+
+        # ── Distribute advert fee revenue ──────────────────────────
+        try:
+            distribute_revenue(
+                association       = advert.operator.association,
+                operator          = advert.operator,
+                total_amount_kobo = advert.fee,
+                payment_type      = RevenueDistribution.PaymentType.ADVERT,
+                source_ref        = str(advert.id),
+                note              = (
+                    f'Advert fee — "{advert.headline}" '
+                    f'({advert.get_category_display()})'
+                ),
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                f'Revenue distribution failed for advert {advert.id}: {e}'
+            )
 
         # Notify operator their advert was approved
         send_notification(

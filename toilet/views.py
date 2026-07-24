@@ -14,6 +14,7 @@ from .serializers import (
 )
 from .permissions import IsOperator, IsTreasurer, IsIscooaExec
 from rest_framework.permissions import IsAuthenticated
+from revenue.utils import distribute_toilet_revenue
 
 
 
@@ -173,6 +174,24 @@ class RegisterToiletView(APIView):
                 payment_ref   = payment_ref,
             )
 
+            # ── Distribute toilet revenue (100% to association) ────────
+            try:
+                distribute_toilet_revenue(
+                    association       = request.user.association,
+                    operator          = request.user,
+                    total_amount_kobo = amount,
+                    source_ref        = payment_ref,
+                    note              = (
+                        f'Toilet access — {serializer.validated_data["full_name"]} '
+                        f'({plan})'
+                    ),
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(
+                    f'Revenue distribution failed for toilet registration: {e}'
+                )
+
         return Response({
             'detail':                   'Toilet access registered and payment confirmed.',
             'access_ref':               subscription.access_ref,
@@ -315,6 +334,23 @@ class RenewToiletView(APIView):
             subscription.status      = ToiletSubscription.Status.ACTIVE
             subscription.payment_ref = payment_ref
             subscription.save()
+
+        # ── Distribute toilet renewal revenue ──────────────────────
+        try:
+            distribute_toilet_revenue(
+                association       = request.user.association,
+                operator          = request.user,
+                total_amount_kobo = amount,
+                source_ref        = payment_ref,
+                note              = (
+                    f'Toilet renewal — {subscription.full_name} ({plan})'
+                ),
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                f'Revenue distribution failed for toilet renewal: {e}'
+            )
 
         return Response({
             'detail':                   'Toilet subscription renewed and payment confirmed.',
