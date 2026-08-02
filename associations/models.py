@@ -88,6 +88,12 @@ class AssociationConfig(models.Model):
     toilet_association_share = models.IntegerField(default=100)
     # Default 100% to association — Iprolance takes nothing
 
+    # Bill revenue split — association keeps most since bills
+    # cover real complex expenses (electricity, water, maintenance)
+    # Default: 80% to association, 20% to Iprolance
+    bill_association_share  = models.IntegerField(default=80)
+    bill_platform_share     = models.IntegerField(default=20)
+
     updated_at      = models.DateTimeField(auto_now=True)
 
     class Meta:

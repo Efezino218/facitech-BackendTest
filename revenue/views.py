@@ -92,17 +92,47 @@ class AssociationRevenueDashboardView(APIView):
                 'total_naira': month_total / 100,
             })
 
+        # Get split percentages from config
+        try:
+            config = assoc.config
+            sub_assoc_pct  = config.association_share
+            sub_plat_pct   = config.platform_share
+            bill_assoc_pct = config.bill_association_share
+            bill_plat_pct  = config.bill_platform_share
+        except Exception:
+            sub_assoc_pct  = 20
+            sub_plat_pct   = 80
+            bill_assoc_pct = 80
+            bill_plat_pct  = 20
+
         return Response({
             'association':  assoc.name,
             'wallet': {
-                'balance_naira':          wallet.balance_naira,
-                'total_earned_naira':     wallet.total_earned_naira,
-                'total_withdrawn_naira':  wallet.total_withdrawn_naira,
+                'balance_naira':               wallet.balance_naira,
+                'total_earned_naira':          wallet.total_earned_naira,
+                'total_withdrawn_naira':       wallet.total_withdrawn_naira,
                 'available_to_withdraw_naira': wallet.balance_naira,
             },
-            'this_month_naira':   this_month / 100,
-            'revenue_by_type':    by_type,
-            'monthly_breakdown':  monthly,
+            'revenue_split_info': {
+                'subscriptions_and_adverts': {
+                    'association_pct': sub_assoc_pct,
+                    'platform_pct':    sub_plat_pct,
+                    'note': 'Platform revenue — Iprolance takes the larger share',
+                },
+                'bills_and_external_payments': {
+                    'association_pct': bill_assoc_pct,
+                    'platform_pct':    bill_plat_pct,
+                    'note': 'Bill levies — Association keeps most since bills cover real complex expenses',
+                },
+                'toilet': {
+                    'association_pct': 100,
+                    'platform_pct':    0,
+                    'note': 'Toilet revenue goes entirely to the association',
+                },
+            },
+            'this_month_naira':    this_month / 100,
+            'revenue_by_type':     by_type,
+            'monthly_breakdown':   monthly,
             'recent_transactions': RevenueTransactionSerializer(
                 recent_txns, many=True
             ).data,

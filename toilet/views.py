@@ -12,7 +12,7 @@ from .serializers import (
     ToiletRegisterSerializer,
     ToiletRenewSerializer,
 )
-from .permissions import IsOperator, IsTreasurer, IsIscooaExec
+from .permissions import IsOperator, IsTreasurer, IsIscooaExec, IsTreasurerOrPresident
 from rest_framework.permissions import IsAuthenticated
 from revenue.utils import distribute_toilet_revenue
 
@@ -32,6 +32,29 @@ def get_expiry_date(start_date, plan):
     elif plan == 'annual':
         return start_date + relativedelta(years=1)
     return start_date
+
+
+
+
+def auto_expire_toilet_subscriptions(association):
+    """
+    Automatically marks toilet subscriptions as expired
+    when their expiry date has passed.
+    Called before any list query so data is always fresh.
+    """
+    from django.utils import timezone
+    today = timezone.now().date()
+    expired = ToiletSubscription.objects.filter(
+        association  = association,
+        status       = ToiletSubscription.Status.ACTIVE,
+        expiry_date__lt = today,
+    )
+    if expired.exists():
+        count = expired.count()
+        expired.update(status=ToiletSubscription.Status.EXPIRED)
+        return count
+    return 0
+
 
 
 def get_active_pricing_for_user(user):
@@ -217,10 +240,16 @@ class MyToiletSubscriptionsView(generics.ListAPIView):
     permission_classes = [IsOperator]
 
     def get_queryset(self):
+        assoc = self.request.user.association
+
+        # Auto-expire before returning data
+        auto_expire_toilet_subscriptions(assoc)
+
         qs = ToiletSubscription.objects.filter(
             registered_by = self.request.user,
-            association   = self.request.user.association,
+            association   = assoc,
         )
+
         sub_status = self.request.query_params.get('status')
         if sub_status:
             qs = qs.filter(status=sub_status)
@@ -370,19 +399,24 @@ class RenewToiletView(APIView):
 class AllToiletSubscriptionsView(generics.ListAPIView):
     """
     GET /api/v1/toilet/all/
-    Treasurer sees only their association's toilet subscriptions.
+    Treasurer and President see their association's
+    toilet subscriptions.
+    Auto-expires subscriptions before returning data.
     Filter by ?status=active|expired
     Filter by ?person_type=staff|customer
     Filter by ?plan=daily|monthly|quarterly|annual
     """
     serializer_class   = ToiletSubscriptionSerializer
-    permission_classes = [IsTreasurer]
+    permission_classes = [IsTreasurerOrPresident]
 
     def get_queryset(self):
-        # Treasurer only sees their own association
-        qs = ToiletSubscription.objects.filter(
-            association=self.request.user.association
-        )
+        assoc = self.request.user.association
+
+        # Auto-expire before returning data
+        auto_expire_toilet_subscriptions(assoc)
+
+        qs = ToiletSubscription.objects.filter(association=assoc)
+
         sub_status = self.request.query_params.get('status')
         if sub_status:
             qs = qs.filter(status=sub_status)
@@ -401,7 +435,7 @@ class ToiletRevenueSummaryView(APIView):
     Treasurer sees total toilet revenue for their association.
     100% goes to the association.
     """
-    permission_classes = [IsTreasurer]
+    permission_classes = [IsTreasurerOrPresident]
 
     def get(self, request):
         from django.db.models import Sum, Count

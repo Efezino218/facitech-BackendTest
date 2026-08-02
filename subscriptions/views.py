@@ -57,11 +57,17 @@ class MySubscriptionView(APIView):
         )
 
         # Always sync shop count to current active shops
-        # This ensures if operator added shops after
-        # subscription was created the count is always fresh
+        # and rate to current association config
+        update_fields = []
         if subscription.shop_count != current_shop_count:
             subscription.shop_count = current_shop_count
-            subscription.save()
+            update_fields.append('shop_count')
+        if subscription.rate_per_shop != default_rate and created is False:
+            subscription.rate_per_shop = default_rate
+            update_fields.append('rate_per_shop')
+        if update_fields:
+            subscription.save(update_fields=update_fields)
+            
 
         serializer = SubscriptionSerializer(subscription)
         data = serializer.data
@@ -86,61 +92,94 @@ class MySubscriptionView(APIView):
 class PaySubscriptionView(APIView):
     """
     POST /api/v1/subscriptions/pay/
-    Operator selects a cycle and pays their subscription
-    via Cool MFB wallet.
-    Month 1 is always free — no payment needed.
+    Operator pays their subscription fee.
+
+    Flow:
+    1. Check not already paid for this period (prevents duplicates)
+    2. Check wallet balance
+    3. Debit wallet
+    4. Create payment record
+    5. Advance subscription — renewal date, month, status
+    6. Clear overdue/suspended flags if applicable
+    7. Distribute revenue
     """
     permission_classes = [IsOperator]
 
     def post(self, request):
-        serializer = CycleSelectSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(
-                serializer.errors,
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        cycle = serializer.validated_data['cycle']
-
+        # ── Get subscription ──────────────────────────────────────────
         try:
             subscription = request.user.subscription
         except Subscription.DoesNotExist:
             return Response(
-                {'detail': 'Subscription record not found. Please visit your subscription page first.'},
+                {'detail': 'No subscription found. Please complete KYC first.'},
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Month 1 is free — no payment needed
+        # ── Cannot pay during free trial month ────────────────────────
         if subscription.current_month == 1:
             return Response(
                 {
-                    'detail': 'Month 1 is free during your KYC period. No payment required.',
-                    'current_month': subscription.current_month,
-                    'status': subscription.status,
-                }
+                    'detail': (
+                        'Month 1 is your free trial period. '
+                        'No payment required until Month 2.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Update cycle on subscription
-        subscription.cycle = cycle
-        subscription.save()
+        # ── Determine billing cycle ───────────────────────────────────
+        cycle = request.data.get('cycle', 'monthly')
+        if cycle not in ['monthly', 'quarterly', 'annual']:
+            return Response(
+                {'detail': 'cycle must be monthly, quarterly or annual.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # Calculate amounts
-        # Sync shop count to current active shops at payment time
+        # ── Determine billing period string ───────────────────────────
+        period = timezone.now().strftime('%Y-%m')
+
+        # ── DUPLICATE PAYMENT CHECK ───────────────────────────────────
+        # Prevent operator from paying twice for the same month
+        already_paid = SubscriptionPayment.objects.filter(
+            operator = request.user,
+            period   = period,
+            status   = SubscriptionPayment.Status.PAID,
+        ).exists()
+
+        if already_paid:
+            return Response(
+                {
+                    'detail': (
+                        f'You have already paid your subscription for {period}. '
+                        f'Next payment is due on {subscription.renewal_date}.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Sync shop count to current active shops ───────────────────
         from shops.models import Shop
         current_shop_count = Shop.objects.filter(
             operator  = request.user,
-            is_active = True
+            is_active = True,
         ).count() or 1
 
         if subscription.shop_count != current_shop_count:
             subscription.shop_count = current_shop_count
-            subscription.save()
+            subscription.save(update_fields=['shop_count'])
 
-        # Calculate amounts based on current shop count
-        # This ensures all shops added before payment date are included
-        amount = subscription.cycle_total()
+        # ── Calculate amount ──────────────────────────────────────────
+        if cycle == 'monthly':
+            months_forward = 1
+            amount         = subscription.monthly_fee
+        elif cycle == 'quarterly':
+            months_forward = 3
+            amount         = subscription.monthly_fee * 3
+        else:
+            months_forward = 12
+            amount         = subscription.monthly_fee * 12
 
-        # Get revenue split from association config
+        # ── Get revenue split from association config ─────────────────
         assoc_share    = 20
         platform_share = 80
         try:
@@ -153,9 +192,6 @@ class PaySubscriptionView(APIView):
         iscooa_cut    = int(amount * (assoc_share / 100))
         iprolance_cut = int(amount * (platform_share / 100))
 
-        # Determine billing period string
-        period = timezone.now().strftime('%Y-%m')
-
         # ── Get or create wallet ──────────────────────────────────────
         from wallet.models import Wallet
         wallet, _ = Wallet.objects.get_or_create(
@@ -167,7 +203,7 @@ class PaySubscriptionView(APIView):
             }
         )
 
-        # ── Check balance before touching anything ────────────────────
+        # ── Check balance ─────────────────────────────────────────────
         if wallet.balance < amount:
             return Response(
                 {
@@ -181,6 +217,7 @@ class PaySubscriptionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # ── Process payment atomically ────────────────────────────────
         with transaction.atomic():
             payment_ref = (
                 f"COOLMFB-SUB-"
@@ -188,7 +225,7 @@ class PaySubscriptionView(APIView):
                 f"{timezone.now().strftime('%Y%m%d%H%M%S')}"
             )
 
-            # ── Step 1: Debit wallet first ────────────────────────────
+            # Step 1 — Debit wallet
             try:
                 wallet.debit(
                     amount_kobo = amount,
@@ -206,7 +243,7 @@ class PaySubscriptionView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # ── Step 2: Record subscription payment ───────────────────
+            # Step 2 — Create payment record
             payment = SubscriptionPayment.objects.create(
                 subscription  = subscription,
                 operator      = request.user,
@@ -221,47 +258,55 @@ class PaySubscriptionView(APIView):
                 paid_at       = timezone.now(),
             )
 
-            # ── Step 3: Advance subscription ──────────────────────────
-            subscription.current_month += 1
-            subscription.status         = Subscription.Status.ACTIVE
-
-            # Set next renewal date properly
+            # Step 3 — Advance subscription correctly
             from dateutil.relativedelta import relativedelta
-            if cycle == 'monthly':
-                months_forward = 1
-            elif cycle == 'quarterly':
-                months_forward = 3
-            else:
-                months_forward = 12
+            today        = timezone.now().date()
+            new_renewal  = today + relativedelta(months=months_forward)
 
-            subscription.renewal_date = (
-                timezone.now().date() +
-                relativedelta(months=months_forward)
-            )
+            # Advance month counter
+            subscription.current_month += 1
+
+            # Set status to ACTIVE regardless of previous status
+            # (clears OVERDUE or SUSPENDED if payment was made)
+            subscription.status = Subscription.Status.ACTIVE
+
+            # Set new renewal date from TODAY not from old renewal date
+            # This prevents stacking — if they paid late the clock
+            # resets from today not from the missed date
+            subscription.renewal_date = new_renewal
+
+            # Set period start to today
+            subscription.period_start = today
+
+            # Clear overdue and suspension flags
+            subscription.overdue_since    = None
+            subscription.suspended_since  = None
+            subscription.suspended_reason = ''
+            subscription.last_reminded_at = None
+
             subscription.save()
 
-        # ── Distribute revenue to association and platform ──────────
-        try:
-            distribute_revenue(
-                association       = request.user.association,
-                operator          = request.user,
-                total_amount_kobo = amount,
-                payment_type      = RevenueDistribution.PaymentType.SUBSCRIPTION,
-                source_ref        = payment.payment_ref,
-                note              = (
-                    f'Subscription payment — {cycle} cycle, '
-                    f'{subscription.shop_count} shop(s), '
-                    f'Month {subscription.current_month}'
-                ),
-            )
-        except Exception as e:
-            # Never fail the payment if revenue distribution fails
-            # Log and continue — can be reconciled manually
-            import logging
-            logging.getLogger(__name__).error(
-                f'Revenue distribution failed for subscription '
-                f'{payment.payment_ref}: {e}'
-            )        
+            # Step 4 — Distribute revenue
+            try:
+                from revenue.utils import distribute_revenue
+                from revenue.models import RevenueDistribution
+                distribute_revenue(
+                    association       = request.user.association,
+                    operator          = request.user,
+                    total_amount_kobo = amount,
+                    payment_type      = RevenueDistribution.PaymentType.SUBSCRIPTION,
+                    source_ref        = payment_ref,
+                    note              = (
+                        f'Subscription — {cycle} cycle, '
+                        f'{subscription.shop_count} shop(s), '
+                        f'Month {subscription.current_month}'
+                    ),
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(
+                    f'Revenue distribution failed for subscription {payment_ref}: {e}'
+                )
 
         return Response({
             'detail':                   'Subscription payment successful.',
@@ -274,13 +319,17 @@ class PaySubscriptionView(APIView):
             'payment_ref':              payment.payment_ref,
             'current_month':            subscription.current_month,
             'new_wallet_balance_naira': wallet.balance_naira,
+            'previous_renewal_date':    subscription.renewal_date - relativedelta(months=months_forward),
             'next_renewal_date':        subscription.renewal_date,
+            'status':                   subscription.status,
             'billing_note': (
                 f'Payment covers {subscription.shop_count} shop(s). '
-                f'All shops active at payment time are included.'
+                f'Next payment due: {subscription.renewal_date}.'
             ),
         })
 
+
+    
 
 # ─── ISCOOA EXECUTIVE VIEWS ───────────────────────────────────────────────────
 

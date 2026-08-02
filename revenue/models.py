@@ -177,10 +177,13 @@ class RevenueDistribution(models.Model):
     """
 
     class PaymentType(models.TextChoices):
-        SUBSCRIPTION = 'subscription', 'Subscription'
-        ADVERT       = 'advert',       'Advert Fee'
-        TOILET       = 'toilet',       'Toilet Access'
-        BILL         = 'bill',         'HFP Bill'
+        SUBSCRIPTION     = 'subscription',      'Subscription Fee'
+        ADVERT           = 'advert',            'Advert Fee'
+        TOILET           = 'toilet',            'Toilet Subscription'
+        BILL             = 'bill',              'HFP Bill Payment'
+        EXTERNAL_PAYMENT = 'external_payment',  'External Payment'
+        WITHDRAWAL       = 'withdrawal',        'Withdrawal'
+        ADJUSTMENT       = 'adjustment',        'Manual Adjustment'
 
     id              = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -199,7 +202,7 @@ class RevenueDistribution(models.Model):
                       )
 
     payment_type    = models.CharField(
-                        max_length=15,
+                        max_length=16,
                         choices=PaymentType.choices,
                       )
 

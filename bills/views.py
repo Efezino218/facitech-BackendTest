@@ -340,11 +340,60 @@ class VerifyBillView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Verify the bill
-        bill.status = Bill.Status.VERIFIED
-        bill.verified_by = request.user
-        bill.verified_at = timezone.now()
-        bill.save()
+        with transaction.atomic():
+            bill.status      = Bill.Status.VERIFIED
+            bill.verified_by = request.user
+            bill.verified_at = timezone.now()
+            bill.save()
+
+            # ── Distribute bill revenue ────────────────────────────────
+            # Bill revenue split: 80% association, 20% platform
+            # (Association keeps most since bills cover real expenses)
+            try:
+                from revenue.utils import distribute_revenue
+                from revenue.models import RevenueDistribution
+
+                # Get bill-specific split from association config
+                bill_assoc_share    = 80
+                bill_platform_share = 20
+                try:
+                    config              = bill.operator.association.config
+                    bill_assoc_share    = config.bill_association_share
+                    bill_platform_share = config.bill_platform_share
+                except Exception:
+                    pass
+
+                distribute_revenue(
+                    association           = bill.operator.association,
+                    operator              = bill.operator,
+                    total_amount_kobo     = bill.total,
+                    payment_type          = RevenueDistribution.PaymentType.BILL,
+                    source_ref            = bill.invoice_id,
+                    association_share_pct = bill_assoc_share,
+                    platform_share_pct    = bill_platform_share,
+                    note                  = (
+                        f'HFP Bill verified — {bill.invoice_id} '
+                        f'Period: {bill.billing_period} '
+                        f'Shop: {bill.shop.shop_number}'
+                    ),
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(
+                    f'Revenue distribution failed for bill {bill.invoice_id}: {e}'
+                )
+
+            # Notify operator
+            send_notification(
+                user       = bill.operator,
+                category   = 'bills',
+                title      = f'Bill Verified — {bill.invoice_id}',
+                message    = (
+                    f'Your payment for bill {bill.invoice_id} '
+                    f'has been verified. Your receipt is now available.'
+                ),
+                related_id = str(bill.id),
+            )
 
         # Notify operator their bill has been verified
         send_notification(
@@ -412,11 +461,62 @@ class VerifyExternalPaymentView(APIView):
         # Executive may confirm a different verified amount
         verified_amount = request.data.get('verified_amount', ep.amount)
 
-        ep.status          = ExternalPayment.Status.VERIFIED
-        ep.verified_by     = request.user
-        ep.verified_at     = timezone.now()
-        ep.verified_amount = verified_amount
-        ep.save()
+        with transaction.atomic():
+            ep.status      = ExternalPayment.Status.VERIFIED
+            ep.verified_by = request.user
+            ep.verified_at = timezone.now()
+            ep.verified_amount = verified_amount
+            ep.save()
+
+            # ── Distribute external payment revenue ────────────────────
+            # External payments cover bills paid outside the platform
+            # Same split as bills: 80% association, 20% platform
+            try:
+                from revenue.utils import distribute_revenue
+                from revenue.models import RevenueDistribution
+
+                bill_assoc_share    = 80
+                bill_platform_share = 20
+                try:
+                    config              = ep.operator.association.config
+                    bill_assoc_share    = config.bill_association_share
+                    bill_platform_share = config.bill_platform_share
+                except Exception:
+                    pass
+
+                # Use verified_amount not the submitted amount
+                distribute_revenue(
+                    association           = ep.operator.association,
+                    operator              = ep.operator,
+                    total_amount_kobo     = ep.verified_amount,
+                    payment_type          = RevenueDistribution.PaymentType.EXTERNAL_PAYMENT,
+                    source_ref            = str(ep.id),
+                    association_share_pct = bill_assoc_share,
+                    platform_share_pct    = bill_platform_share,
+                    note                  = (
+                        f'External payment verified — '
+                        f'{ep.get_category_display()} '
+                        f'Period: {ep.billing_period} '
+                        f'Shop: {ep.shop.shop_number}'
+                    ),
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(
+                    f'Revenue distribution failed for external payment {ep.id}: {e}'
+                )
+
+            # Notify operator
+            send_notification(
+                user       = ep.operator,
+                category   = 'bills',
+                title      = 'External Payment Verified',
+                message    = (
+                    f'Your external payment of ₦{ep.amount_naira:,.2f} '
+                    f'for period {ep.billing_period} has been verified.'
+                ),
+                related_id = str(ep.id),
+            )
 
         # Notify operator their external payment was verified
         send_notification(

@@ -76,13 +76,43 @@ class OperatorOverviewView(APIView):
         ).count()
 
         # ── Adverts — THIS operator's submissions ─────────────────────
+        # Separate counts per status so frontend shows full lifecycle
+        now = timezone.now()
+
+        # Auto-expire before counting
+        Advert.objects.filter(
+            operator       = user,
+            status         = 'approved',
+            is_live        = True,
+            expires_at__lt = now,
+        ).update(status='expired', is_live=False)
+
         my_adverts_pending  = Advert.objects.filter(
             operator = user,
             status   = 'pending'
         ).count()
-        my_adverts_approved = Advert.objects.filter(
+
+        # Approved and actually live — not expired or offline
+        my_adverts_live     = Advert.objects.filter(
+            operator       = user,
+            status         = 'approved',
+            is_live        = True,
+            expires_at__gt = now,
+        ).count()
+
+        my_adverts_expired  = Advert.objects.filter(
             operator = user,
-            status   = 'approved'
+            status   = 'expired'
+        ).count()
+
+        my_adverts_offline  = Advert.objects.filter(
+            operator = user,
+            status   = 'offline'
+        ).count()
+
+        my_adverts_rejected = Advert.objects.filter(
+            operator = user,
+            status   = 'rejected'
         ).count()
 
         # ── Disputes — THIS operator's raised disputes ─────────────────
@@ -134,7 +164,17 @@ class OperatorOverviewView(APIView):
                 'renewal_date':              renewal_date,
                 'unread_notifications':      unread_count,
                 'my_adverts_pending':        my_adverts_pending,
-                'my_adverts_approved':       my_adverts_approved,
+                'my_adverts_live':           my_adverts_live,
+                'my_adverts_expired':        my_adverts_expired,
+                'my_adverts_offline':        my_adverts_offline,
+                'my_adverts_rejected':       my_adverts_rejected,
+                'my_adverts_total':          (
+                    my_adverts_pending +
+                    my_adverts_live +
+                    my_adverts_expired +
+                    my_adverts_offline +
+                    my_adverts_rejected
+                ),
                 'my_disputes_open':          my_disputes_open,
                 'my_disputes_resolved':      my_disputes_resolved,
             },
