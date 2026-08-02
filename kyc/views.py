@@ -432,53 +432,9 @@ class KYCApproveView(APIView):
             member_number = config.generate_member_number(count)
         except Exception:
             # Fallback if no association config found
-            from django.utils import timezone
+            # from django.utils import timezone
             year = timezone.now().year
             member_number = f"MEMBER-{year}-{count:04d}"
-
-
-        with transaction.atomic():
-            from django.utils import timezone
-            application.status        = KYCStatus.APPROVED
-            application.member_number = member_number
-            application.approved_by   = request.user
-            application.approved_date = timezone.now()
-            application.save()
-
-            # Notify operator their KYC was approved
-            send_notification(
-                user       = application.operator,
-                category   = 'kyc',
-                title      = 'KYC Application Approved',
-                message    = (
-                    f'Congratulations! Your KYC application ({application.kyc_id}) '
-                    f'has been approved. Your member number is {member_number}.'
-                ),
-                related_id = str(application.id),
-            )
-
-            # Also update the operator's user record
-            application.operator.member_number = member_number
-            application.operator.save()
-
-            note = request.data.get('note', 'Application approved.')
-            KYCReviewNote.objects.create(
-                application=application,
-                reviewed_by=request.user,
-                note=note,
-            )
-
-            
-            log_action(
-                user        = request.user,
-                action      = 'approve',
-                table_name  = 'kyc_applications',
-                record_id   = str(application.id),
-                record_ref  = application.kyc_id,
-                description = f'KYC approved for {application.operator.email}. Member number: {member_number}',
-                request     = request,
-            )
-
 
 
         with transaction.atomic():
