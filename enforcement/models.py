@@ -98,21 +98,27 @@ class Penalty(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.penalty_ref:
-            from django.db import connection
             from django.utils import timezone
             year = timezone.now().year
             
-            # Get the highest existing number for this year
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT MAX(CAST(SUBSTRING(penalty_ref, 9, 4) AS INTEGER)) "
-                    "FROM penalties WHERE penalty_ref LIKE %s",
-                    [f'PEN-{year}-%']
-                )
-                result = cursor.fetchone()[0]
-                next_num = (result or 0) + 1
+            # Get all existing refs for this year
+            existing_refs = Penalty.objects.filter(
+                penalty_ref__startswith=f'PEN-{year}-'
+            ).values_list('penalty_ref', flat=True)
             
+            # Extract numbers and find max
+            numbers = []
+            for ref in existing_refs:
+                try:
+                    # Extract the number part after the last dash
+                    num = int(ref.split('-')[-1])
+                    numbers.append(num)
+                except (ValueError, IndexError):
+                    continue
+            
+            next_num = max(numbers) + 1 if numbers else 1
             self.penalty_ref = f"PEN-{year}-{next_num:04d}"
+        
         super().save(*args, **kwargs)
 
     @property
@@ -206,18 +212,24 @@ class ShutdownNotice(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.shutdown_ref:
-            from django.db import connection
             from django.utils import timezone
             year = timezone.now().year
             
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT MAX(CAST(SUBSTRING(shutdown_ref, 9, 4) AS INTEGER)) "
-                    "FROM shutdown_notices WHERE shutdown_ref LIKE %s",
-                    [f'SDN-{year}-%']
-                )
-                result = cursor.fetchone()[0]
-                next_num = (result or 0) + 1
+            # Get all existing refs for this year
+            existing_refs = ShutdownNotice.objects.filter(
+                shutdown_ref__startswith=f'SDN-{year}-'
+            ).values_list('shutdown_ref', flat=True)
             
+            # Extract numbers and find max
+            numbers = []
+            for ref in existing_refs:
+                try:
+                    num = int(ref.split('-')[-1])
+                    numbers.append(num)
+                except (ValueError, IndexError):
+                    continue
+            
+            next_num = max(numbers) + 1 if numbers else 1
             self.shutdown_ref = f"SDN-{year}-{next_num:04d}"
+        
         super().save(*args, **kwargs)
