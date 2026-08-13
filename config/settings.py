@@ -323,8 +323,9 @@ CORS_ALLOWED_ORIGINS = os.getenv(
 # ─── PAYSTACK ─────────────────────────────────────────────────────────────────
 PAYSTACK_SECRET_KEY    = os.getenv('PAYSTACK_SECRET_KEY', '')
 PAYSTACK_PUBLIC_KEY    = os.getenv('PAYSTACK_PUBLIC_KEY', '')
-PAYSTACK_CALLBACK_URL  = os.getenv('PAYSTACK_CALLBACK_URL', 'http://127.0.0.1:8000/api/v1/wallet/paystack/callback/')
-PAYSTACK_WEBHOOK_URL   = os.getenv('PAYSTACK_WEBHOOK_URL', 'http://127.0.0.1:8000/api/v1/wallet/paystack/webhook/')
+PAYSTACK_CALLBACK_URL  = os.getenv('PAYSTACK_CALLBACK_URL', 'https://facitech.netlify.app/wallet/callback') # -> change this to live url to redirct to frontend
+PAYSTACK_WEBHOOK_URL   = os.getenv('PAYSTACK_WEBHOOK_URL', 'https://facitech-backendtest.onrender.com/api/v1/wallet/paystack/webhook/')
+
 
 
 # Password validation

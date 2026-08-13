@@ -4,7 +4,7 @@ from .views import (
     MyExternalPaymentsView, RegisterExternalPaymentView,
     AllBillsView, RaiseBillView, VerifyBillView,
     AllExternalPaymentsView,
-    VerifyExternalPaymentView, RejectExternalPaymentView,
+    VerifyExternalPaymentView, RejectExternalPaymentView, MyUnpaidBillsView,
 )
 from .upload_views import UploadExternalPaymentEvidenceView
 
@@ -12,6 +12,7 @@ urlpatterns = [
 
     # ── Operator bill endpoints ─────────────────────────────────────
     path('my-bills/',                               MyBillsView.as_view(),                  name='my-bills'),
+    path('my-unpaid-bills/',                        MyUnpaidBillsView.as_view(),            name='my-unpaid-bills'),
     path('my-bills/<uuid:pk>/',                     MyBillDetailView.as_view(),             name='my-bill-detail'),
     path('my-bills/<uuid:pk>/pay/',                 PayBillView.as_view(),                  name='pay-bill'),
 

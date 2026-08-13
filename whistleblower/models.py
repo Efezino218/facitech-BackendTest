@@ -38,6 +38,17 @@ class WhistleblowerReport(models.Model):
                     null=True, blank=True,
                   )
 
+
+    # Who submitted — stored for notification purposes only
+    # NEVER exposed to executives — only used internally
+    # to notify the submitter of status changes
+    submitted_by = models.ForeignKey(
+                    'accounts.User',
+                    on_delete=models.SET_NULL,
+                    null=True, blank=True,
+                    related_name='whistleblower_submissions',
+                  )
+
     category    = models.CharField(max_length=30, choices=Category.choices)
     narrative   = models.TextField()
     # The full report text

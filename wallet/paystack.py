@@ -45,8 +45,11 @@ def initialize_transaction(email, amount_kobo, metadata=None, reference=None):
         'metadata': metadata or {},
     }
 
+    print(f"Callback URL being sent: {settings.PAYSTACK_CALLBACK_URL}")
+    
     if reference:
         payload['reference'] = reference
+    
 
     try:
         response = requests.post(

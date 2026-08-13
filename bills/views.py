@@ -171,8 +171,16 @@ class MyExternalPaymentsView(generics.ListAPIView):
 class RegisterExternalPaymentView(generics.CreateAPIView):
     """
     POST /api/v1/bills/external-payments/register/
-    Operator registers an external payment with evidence.
-    operator is always set from request.user — never accepted from the request body.
+    Operator registers an external payment.
+
+    Two modes:
+    1. WITH bill link — amount locked to exact bill total.
+       billing_period and shop auto-filled from bill.
+       No partial payments or overpayments accepted.
+
+    2. WITHOUT bill link — free-form amount for payments
+       not linked to a specific ISCOOA invoice
+       e.g. EKEDC electricity paid directly.
     """
     serializer_class   = ExternalPaymentCreateSerializer
     permission_classes = [IsOperator]
@@ -184,39 +192,64 @@ class RegisterExternalPaymentView(generics.CreateAPIView):
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(
-            data=request.data,
-            context=self.get_serializer_context()
+            data    = request.data,
+            context = self.get_serializer_context()
         )
         serializer.is_valid(raise_exception=True)
         external_payment = serializer.save(operator=request.user)
 
-        
-        # Notify treasurer of new external payment
-        treasurer_users = User.objects.filter(
-            role        = 'is',
-            ipos        = 'treasurer',
-            association = request.user.association,
-            is_active   = True,
-        )
-        send_bulk_notification(
-            users      = treasurer_users,
-            category   = 'bills',
-            title      = 'External Payment Registered',
-            message    = (
-                f'Operator {request.user.full_name or request.user.email} '
-                f'has registered an external payment of '
-                f'₦{external_payment.amount_naira:,.2f} '
-                f'for period {external_payment.billing_period}. '
-                f'Awaiting your verification.'
-            ),
-            related_id = str(external_payment.id),
-        )
+        # Build response with clear indication of what was auto-filled
+        response_data = {
+            'detail':          'External payment registered successfully. Awaiting Treasurer verification.',
+            'id':              str(external_payment.id),
+            'status':          external_payment.status,
+            'amount_naira':    external_payment.amount / 100,
+            'billing_period':  external_payment.billing_period,
+            'channel':         external_payment.channel,
+            'reference':       external_payment.reference,
+        }
 
-        return Response(
-            self.get_serializer(external_payment).data,
-            status=status.HTTP_201_CREATED
-        )
+        if external_payment.bill:
+            response_data['bill_linked']    = True
+            response_data['invoice_id']     = external_payment.bill.invoice_id
+            response_data['shop_number']    = external_payment.shop.shop_number
+            response_data['note'] = (
+                f'Amount locked to exact bill total of '
+                f'₦{external_payment.amount/100:,.2f}. '
+                f'Bill will be automatically marked as verified once Treasurer approves.'
+            )
+        else:
+            response_data['bill_linked'] = False
+            response_data['note'] = (
+                'No bill linked. Treasurer will verify this payment manually.'
+            )
 
+        return Response(response_data, status=status.HTTP_201_CREATED)
+
+
+
+@extend_schema(tags=['Bills'])
+class MyUnpaidBillsView(generics.ListAPIView):
+    """
+    GET /api/v1/bills/my-unpaid-bills/
+    Operator sees their unpaid bills that can be linked
+    to an external payment.
+    Only shows bills with no pending external payment.
+    Used to populate the bill selector on the external
+    payment form.
+    """
+    serializer_class   = BillSerializer
+    permission_classes = [IsOperator]
+
+    def get_queryset(self):
+        # Get unpaid bills with no pending external payment
+        from django.db.models import Q
+        return Bill.objects.filter(
+            operator = self.request.user,
+            status   = 'unpaid',
+        ).exclude(
+            external_payments__status='pending'
+        ).order_by('-created_at')
 
 
 # ─── ISCOOA EXECUTIVE BILL VIEWS ──────────────────────────────────────────────
@@ -347,32 +380,22 @@ class VerifyBillView(APIView):
             bill.save()
 
             # ── Distribute bill revenue ────────────────────────────────
-            # Bill revenue split: 80% association, 20% platform
-            # (Association keeps most since bills cover real expenses)
+            # ── Distribute bill revenue ────────────────────────────────
+            # Bills are ISCOOA levy collections — 100% to association
+            # Iprolance does not take a cut on bill payments
             try:
                 from revenue.utils import distribute_revenue
                 from revenue.models import RevenueDistribution
-
-                # Get bill-specific split from association config
-                bill_assoc_share    = 80
-                bill_platform_share = 20
-                try:
-                    config              = bill.operator.association.config
-                    bill_assoc_share    = config.bill_association_share
-                    bill_platform_share = config.bill_platform_share
-                except Exception:
-                    pass
-
                 distribute_revenue(
                     association           = bill.operator.association,
                     operator              = bill.operator,
                     total_amount_kobo     = bill.total,
                     payment_type          = RevenueDistribution.PaymentType.BILL,
                     source_ref            = bill.invoice_id,
-                    association_share_pct = bill_assoc_share,
-                    platform_share_pct    = bill_platform_share,
+                    association_share_pct = 100,
+                    platform_share_pct    = 0,
                     note                  = (
-                        f'HFP Bill verified — {bill.invoice_id} '
+                        f'HFP Bill — {bill.invoice_id} '
                         f'Period: {bill.billing_period} '
                         f'Shop: {bill.shop.shop_number}'
                     ),
@@ -383,17 +406,6 @@ class VerifyBillView(APIView):
                     f'Revenue distribution failed for bill {bill.invoice_id}: {e}'
                 )
 
-            # Notify operator
-            send_notification(
-                user       = bill.operator,
-                category   = 'bills',
-                title      = f'Bill Verified — {bill.invoice_id}',
-                message    = (
-                    f'Your payment for bill {bill.invoice_id} '
-                    f'has been verified. Your receipt is now available.'
-                ),
-                related_id = str(bill.id),
-            )
 
         # Notify operator their bill has been verified
         send_notification(
@@ -443,7 +455,7 @@ class VerifyExternalPaymentView(APIView):
     def post(self, request, pk):
         try:
             ep = ExternalPayment.objects.get(
-                pk = pk,
+                pk                    = pk,
                 operator__association = request.user.association,
             )
         except ExternalPayment.DoesNotExist:
@@ -452,52 +464,55 @@ class VerifyExternalPaymentView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        if ep.status != ExternalPayment.Status.PENDING:
+        if ep.status != 'pending':
             return Response(
-                {'detail': 'This payment has already been reviewed.'},
+                {'detail': f'This payment is already {ep.status}.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Executive may confirm a different verified amount
         verified_amount = request.data.get('verified_amount', ep.amount)
+        note            = request.data.get('note', '')
 
         with transaction.atomic():
-            ep.status      = ExternalPayment.Status.VERIFIED
-            ep.verified_by = request.user
-            ep.verified_at = timezone.now()
+            ep.status          = ExternalPayment.Status.VERIFIED
+            ep.verified_by     = request.user
+            ep.verified_at     = timezone.now()
             ep.verified_amount = verified_amount
             ep.save()
 
+            # ── Auto-mark linked bill as verified ──────────────────────
+            bill_auto_verified = False
+            if ep.bill and ep.bill.status in ['unpaid', 'paid']:
+                ep.bill.status      = Bill.Status.VERIFIED
+                ep.bill.verified_by = request.user
+                ep.bill.verified_at = timezone.now()
+                # Use a special ref to indicate external payment
+                ep.bill.paid_ref    = f"EXT-{ep.reference or str(ep.id)[:8].upper()}"
+                if not ep.bill.paid_at:
+                    ep.bill.paid_at = timezone.now()
+                ep.bill.save()
+                bill_auto_verified = True
+
             # ── Distribute external payment revenue ────────────────────
-            # External payments cover bills paid outside the platform
-            # Same split as bills: 80% association, 20% platform
+            # 100% to association — money was received directly
             try:
                 from revenue.utils import distribute_revenue
                 from revenue.models import RevenueDistribution
-
-                bill_assoc_share    = 80
-                bill_platform_share = 20
-                try:
-                    config              = ep.operator.association.config
-                    bill_assoc_share    = config.bill_association_share
-                    bill_platform_share = config.bill_platform_share
-                except Exception:
-                    pass
-
-                # Use verified_amount not the submitted amount
                 distribute_revenue(
                     association           = ep.operator.association,
                     operator              = ep.operator,
                     total_amount_kobo     = ep.verified_amount,
                     payment_type          = RevenueDistribution.PaymentType.EXTERNAL_PAYMENT,
                     source_ref            = str(ep.id),
-                    association_share_pct = bill_assoc_share,
-                    platform_share_pct    = bill_platform_share,
+                    association_share_pct = 100,
+                    platform_share_pct    = 0,
                     note                  = (
                         f'External payment verified — '
                         f'{ep.get_category_display()} '
                         f'Period: {ep.billing_period} '
-                        f'Shop: {ep.shop.shop_number}'
+                        f'Shop: {ep.shop.shop_number}. '
+                        f'Money received directly by association.'
+                        + (f' Linked bill: {ep.bill.invoice_id}' if ep.bill else '')
                     ),
                 )
             except Exception as e:
@@ -507,6 +522,14 @@ class VerifyExternalPaymentView(APIView):
                 )
 
             # Notify operator
+            bill_message = ''
+            if bill_auto_verified:
+                bill_message = (
+                    f' Your bill {ep.bill.invoice_id} '
+                    f'has been automatically marked as verified.'
+                )
+
+            from notifications.utils import send_notification
             send_notification(
                 user       = ep.operator,
                 category   = 'bills',
@@ -514,25 +537,17 @@ class VerifyExternalPaymentView(APIView):
                 message    = (
                     f'Your external payment of ₦{ep.amount_naira:,.2f} '
                     f'for period {ep.billing_period} has been verified.'
-                ),
-                related_id = str(ep.id),
-            )
-
-        # Notify operator their external payment was verified
-        send_notification(
-                user       = ep.operator,
-                category   = 'bills',
-                title      = 'External Payment Verified',
-                message    = (
-                    f'Your external payment of ₦{ep.amount_naira:,.2f} '
-                    f'for period {ep.billing_period} has been verified.'
+                    + bill_message
                 ),
                 related_id = str(ep.id),
             )
 
         return Response({
-            'detail': 'External payment verified.',
-            'status': ep.status,
+            'detail':               'External payment verified.',
+            'verified_amount_naira': ep.verified_amount / 100,
+            'bill_auto_verified':    bill_auto_verified,
+            'bill_invoice_id':       ep.bill.invoice_id if ep.bill else None,
+            'bill_status':           ep.bill.status if ep.bill else None,
         })
 
 

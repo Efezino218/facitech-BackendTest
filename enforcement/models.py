@@ -77,6 +77,15 @@ class Penalty(models.Model):
                       )
     waiver_reason   = models.TextField(blank=True)
 
+    # Operator response
+    operator_response   = models.TextField(blank=True)
+    operator_responded_at = models.DateTimeField(null=True, blank=True)
+
+    # Fine payment
+    fine_paid           = models.BooleanField(default=False)
+    fine_paid_at        = models.DateTimeField(null=True, blank=True)
+    fine_payment_ref    = models.CharField(max_length=100, blank=True)
+
     created_at      = models.DateTimeField(auto_now_add=True)
     updated_at      = models.DateTimeField(auto_now=True)
 
@@ -89,10 +98,21 @@ class Penalty(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.penalty_ref:
-            count = Penalty.objects.count() + 1
+            from django.db import connection
             from django.utils import timezone
             year = timezone.now().year
-            self.penalty_ref = f"PEN-{year}-{count:04d}"
+            
+            # Get the highest existing number for this year
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT MAX(CAST(SUBSTRING(penalty_ref, 9, 4) AS INTEGER)) "
+                    "FROM penalties WHERE penalty_ref LIKE %s",
+                    [f'PEN-{year}-%']
+                )
+                result = cursor.fetchone()[0]
+                next_num = (result or 0) + 1
+            
+            self.penalty_ref = f"PEN-{year}-{next_num:04d}"
         super().save(*args, **kwargs)
 
     @property
@@ -160,6 +180,10 @@ class ShutdownNotice(models.Model):
                         related_name='issued_shutdowns'
                       )
 
+        # Operator response to shutdown
+    operator_response     = models.TextField(blank=True)
+    operator_responded_at = models.DateTimeField(null=True, blank=True)
+
     # Lift details
     lifted_at       = models.DateTimeField(null=True, blank=True)
     lifted_by       = models.ForeignKey(
@@ -182,8 +206,18 @@ class ShutdownNotice(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.shutdown_ref:
-            count = ShutdownNotice.objects.count() + 1
+            from django.db import connection
             from django.utils import timezone
             year = timezone.now().year
-            self.shutdown_ref = f"SDN-{year}-{count:04d}"
+            
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT MAX(CAST(SUBSTRING(shutdown_ref, 9, 4) AS INTEGER)) "
+                    "FROM shutdown_notices WHERE shutdown_ref LIKE %s",
+                    [f'SDN-{year}-%']
+                )
+                result = cursor.fetchone()[0]
+                next_num = (result or 0) + 1
+            
+            self.shutdown_ref = f"SDN-{year}-{next_num:04d}"
         super().save(*args, **kwargs)

@@ -174,6 +174,16 @@ class ExternalPayment(models.Model):
                         on_delete=models.CASCADE,
                         related_name='external_payments'
                       )
+
+    # Optional link to a specific bill this payment covers
+    # When verified the linked bill is automatically marked as verified
+    bill            = models.ForeignKey(
+                        'Bill',
+                        on_delete=models.SET_NULL,
+                        null=True, blank=True,
+                        related_name='external_payments',
+                      )
+
     shop            = models.ForeignKey(
                         Shop,
                         on_delete=models.CASCADE,

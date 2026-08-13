@@ -3,6 +3,12 @@ from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
+from django.utils import timezone
+from django.db import transaction
+from notifications.utils import send_notification, send_bulk_notification
+from accounts.models import User
+
+
 from .models import Penalty, ShutdownNotice
 from .serializers import (
     PenaltySerializer, PenaltyCreateSerializer,
@@ -49,14 +55,16 @@ class MyPenaltyDetailView(generics.RetrieveAPIView):
 class MyShutdownsView(generics.ListAPIView):
     """
     GET /api/v1/enforcement/my-shutdowns/
-    Operator sees all shutdown notices against their shops.
-    Filter by ?status=active|lifted|pending
+    Operator sees all shutdown notices issued to them.
+    Filter by ?status=active|lifted
     """
     serializer_class   = ShutdownNoticeSerializer
     permission_classes = [IsOperator]
 
     def get_queryset(self):
-        qs = ShutdownNotice.objects.filter(operator=self.request.user)
+        qs = ShutdownNotice.objects.filter(
+            operator = self.request.user
+        )
         sdn_status = self.request.query_params.get('status')
         if sdn_status:
             qs = qs.filter(status=sdn_status)
@@ -104,7 +112,7 @@ class IssuePenaltyView(generics.CreateAPIView):
         penalty = serializer.save(issued_by=request.user)
 
         # Send notification to operator
-        from notifications.utils import send_notification
+        # from notifications.utils import send_notification
         send_notification(
             user       = penalty.operator,
             category   = 'penalties',
@@ -206,6 +214,21 @@ class AllShutdownsView(generics.ListAPIView):
 
 
 @extend_schema(tags=['Enforcement'])
+class ShutdownDetailAdminView(generics.RetrieveAPIView):
+    """
+    GET /api/v1/enforcement/all-shutdowns/<id>/
+    ISCOOA Executive views full shutdown detail with operator response.
+    """
+    serializer_class = ShutdownNoticeSerializer
+    permission_classes = [IsIscooaExec]
+
+    def get_queryset(self):
+        return ShutdownNotice.objects.filter(
+            operator__association=self.request.user.association
+        )
+
+
+@extend_schema(tags=['Enforcement'])
 class IssueShutdownView(generics.CreateAPIView):
     """
     POST /api/v1/enforcement/issue-shutdown/
@@ -223,7 +246,7 @@ class IssueShutdownView(generics.CreateAPIView):
         )
 
         # Send notification to operator
-        from notifications.utils import send_notification
+        # from notifications.utils import send_notification
         send_notification(
             user       = shutdown.operator,
             category   = 'penalties',
@@ -247,16 +270,17 @@ class IssueShutdownView(generics.CreateAPIView):
 @extend_schema(tags=['Enforcement'])
 class LiftShutdownView(APIView):
     """
-    POST /api/v1/enforcement/shutdowns/<id>/lift/
+    POST /api/v1/enforcement/all-shutdowns/<id>/lift/
     ISCOOA Executive lifts a shutdown notice.
-    Notifies operator and HFP.
+    A lift reason is required.
+    Operator is notified immediately.
     """
     permission_classes = [IsIscooaExec]
 
     def post(self, request, pk):
         try:
             shutdown = ShutdownNotice.objects.get(
-                pk = pk,
+                pk                    = pk,
                 operator__association = request.user.association,
             )
         except ShutdownNotice.DoesNotExist:
@@ -265,40 +289,51 @@ class LiftShutdownView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        if shutdown.status == ShutdownNotice.Status.LIFTED:
+        if shutdown.status == 'lifted':
             return Response(
-                {'detail': 'This shutdown has already been lifted.'},
+                {
+                    'detail': (
+                        f'This shutdown was already lifted on '
+                        f'{shutdown.lifted_at.strftime("%d %b %Y") if shutdown.lifted_at else "an earlier date"}.'
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        lift_reason = request.data.get('lift_reason', '')
+        lift_reason = request.data.get('reason', '').strip()
         if not lift_reason:
             return Response(
                 {'detail': 'A lift reason is required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        shutdown.status      = ShutdownNotice.Status.LIFTED
-        shutdown.lifted_at   = timezone.now()
+        shutdown.status      = 'lifted'
         shutdown.lifted_by   = request.user
+        shutdown.lifted_at   = timezone.now()
         shutdown.lift_reason = lift_reason
         shutdown.save()
 
-        # Notify operator
-        from notifications.utils import send_notification
+        # Notify operator shutdown has been lifted
         send_notification(
             user       = shutdown.operator,
-            category   = 'penalties',
+            category   = 'general',
             title      = f'Shutdown Lifted — {shutdown.shutdown_ref}',
-            message    = f'The shutdown notice on your shop {shutdown.shop.shop_number} has been lifted. Reason: {lift_reason}. You may resume normal trading.',
+            message    = (
+                f'Your shop {shutdown.shop.shop_number} shutdown notice '
+                f'({shutdown.shutdown_ref}) has been lifted by ISCOOA. '
+                f'Reason: {lift_reason}. '
+                f'You may resume normal operations immediately.'
+            ),
             related_id = str(shutdown.id),
         )
 
         return Response({
-            'detail':       'Shutdown lifted successfully.',
-            'shutdown_ref': shutdown.shutdown_ref,
-            'lifted_at':    shutdown.lifted_at,
-            'lift_reason':  shutdown.lift_reason,
+            'detail':      'Shutdown lifted successfully. Operator has been notified.',
+            'shutdown_ref':  shutdown.shutdown_ref,
+            'status':      shutdown.status,
+            'lift_reason': shutdown.lift_reason,
+            'lifted_by':   request.user.full_name,
+            'lifted_at':   shutdown.lifted_at,
         })
 
 
@@ -340,3 +375,433 @@ class EnforcementStatsView(APIView):
                 'lifted': shutdowns.filter(status='lifted').count(),
             },
         })
+    
+
+@extend_schema(tags=['Enforcement'])
+class RespondToPenaltyView(APIView):
+    """
+    POST /api/v1/enforcement/my-penalties/<id>/respond/
+    Operator submits a written response to a penalty.
+    This does not remove the penalty — it goes on record.
+    Notifies issuing executive of the response.
+    """
+    permission_classes = [IsOperator]
+
+    def post(self, request, pk):
+        try:
+            penalty = Penalty.objects.get(
+                pk       = pk,
+                operator = request.user,
+            )
+        except Penalty.DoesNotExist:
+            return Response(
+                {'detail': 'Penalty not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        response_text = request.data.get('response', '').strip()
+        if not response_text:
+            return Response(
+                {'detail': 'A written response is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if penalty.operator_response:
+            return Response(
+                {'detail': 'You have already submitted a response to this penalty.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        penalty.operator_response    = response_text
+        penalty.operator_responded_at = timezone.now()
+        penalty.save()
+
+        # Notify all association executives of the response
+        exco_users = User.objects.filter(
+            role        = 'is',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = exco_users,
+            category   = 'general',
+            title      = f'Penalty Response — {penalty.penalty_ref}',
+            message    = (
+                f'Operator {request.user.full_name or request.user.email} '
+                f'has submitted a response to penalty {penalty.penalty_ref}. '
+                f'Response: "{response_text[:100]}..."'
+            ),
+            related_id = str(penalty.id),
+        )
+
+        return Response({
+            'detail':       'Your response has been recorded and sent to ISCOOA.',
+            'penalty_ref':  penalty.penalty_ref,
+            'response':     response_text,
+            'responded_at': penalty.operator_responded_at,
+        })
+
+
+@extend_schema(tags=['Enforcement'])
+class PayPenaltyFineView(APIView):
+    """
+    POST /api/v1/enforcement/my-penalties/<id>/pay-fine/
+    Operator pays their penalty fine via Cool MFB wallet.
+    Debits wallet, marks fine as paid, status becomes 'paid'.
+    Fine goes 100% to the association.
+    """
+    permission_classes = [IsOperator]
+
+    def post(self, request, pk):
+        try:
+            penalty = Penalty.objects.get(
+                pk       = pk,
+                operator = request.user,
+            )
+        except Penalty.DoesNotExist:
+            return Response(
+                {'detail': 'Penalty not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # ── Guard checks using correct field names ─────────────────────
+
+        if not penalty.amount or penalty.amount == 0:
+            return Response(
+                {'detail': 'This penalty has no fine amount to pay.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if penalty.status == 'paid':
+            return Response(
+                {'detail': 'The fine for this penalty has already been paid.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if penalty.status == 'waived':
+            return Response(
+                {'detail': 'This penalty has been waived. No payment required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if penalty.fine_paid:
+            return Response(
+                {'detail': 'This fine has already been paid.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Get or create wallet ──────────────────────────────────────
+        from wallet.models import Wallet
+        wallet, _ = Wallet.objects.get_or_create(
+            operator = request.user,
+            defaults = {
+                'balance':                0,
+                'coolmfb_account_number': f"COOL{request.user.id.hex[:10].upper()}",
+                'coolmfb_account_name':   request.user.full_name or request.user.email,
+            }
+        )
+
+        if wallet.balance < penalty.amount:
+            return Response(
+                {
+                    'detail': (
+                        f'Insufficient wallet balance. '
+                        f'Fine amount: ₦{penalty.amount/100:,.2f}. '
+                        f'Available: ₦{wallet.balance_naira:,.2f}. '
+                        f'Please top up your wallet.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            payment_ref = (
+                f"FINE-{penalty.penalty_ref}-"
+                f"{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            )
+
+            # ── Debit wallet ──────────────────────────────────────────
+            try:
+                wallet.debit(
+                    amount_kobo = penalty.amount,
+                    description = (
+                        f'Penalty fine — {penalty.penalty_ref}: '
+                        f'{penalty.description[:50]}'   # ← correct field
+                    ),
+                    method = 'wallet',
+                    ref    = payment_ref,
+                )
+            except ValueError as e:
+                return Response(
+                    {'detail': str(e)},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ── Update penalty status ─────────────────────────────────
+            penalty.fine_paid        = True
+            penalty.fine_paid_at     = timezone.now()
+            penalty.fine_payment_ref = payment_ref
+            penalty.status           = 'paid'     # ← update status to paid
+            penalty.save()
+
+            # ── Distribute fine revenue 100% to association ───────────
+            try:
+                from revenue.utils import distribute_revenue
+                from revenue.models import RevenueDistribution
+                distribute_revenue(
+                    association           = request.user.association,
+                    operator              = request.user,
+                    total_amount_kobo     = penalty.amount,
+                    payment_type          = RevenueDistribution.PaymentType.BILL,
+                    source_ref            = payment_ref,
+                    association_share_pct = 100,
+                    platform_share_pct    = 0,
+                    note                  = (
+                        f'Penalty fine — {penalty.penalty_ref}'
+                    ),
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(
+                    f'Revenue distribution failed for penalty fine {payment_ref}: {e}'
+                )
+
+        # ── Notify Treasurer ──────────────────────────────────────────
+        treasurer_users = User.objects.filter(
+            role        = 'is',
+            ipos        = 'treasurer',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = treasurer_users,
+            category   = 'general',
+            title      = f'Penalty Fine Paid — {penalty.penalty_ref}',
+            message    = (
+                f'Operator {request.user.full_name or request.user.email} '
+                f'has paid the fine of ₦{penalty.amount/100:,.2f} '
+                f'for penalty {penalty.penalty_ref}. '
+                f'Payment ref: {payment_ref}.'
+            ),
+            related_id = str(penalty.id),
+        )
+
+        return Response({
+            'detail':                   'Fine paid successfully.',
+            'penalty_ref':              penalty.penalty_ref,
+            'status':                   penalty.status,
+            'fine_amount_naira':        penalty.amount / 100,
+            'payment_ref':              payment_ref,
+            'new_wallet_balance_naira': wallet.balance_naira,
+        })
+
+
+@extend_schema(tags=['Enforcement'])
+class RespondToShutdownView(APIView):
+    """
+    POST /api/v1/enforcement/my-shutdowns/<id>/respond/
+    Operator submits a formal written response to a shutdown notice.
+    Notifies all ISCOOA executives of the response.
+    Only one response allowed per shutdown notice.
+    """
+    permission_classes = [IsOperator]
+
+    def post(self, request, pk):
+        try:
+            shutdown = ShutdownNotice.objects.get(
+                pk       = pk,
+                operator = request.user,
+            )
+        except ShutdownNotice.DoesNotExist:
+            return Response(
+                {'detail': 'Shutdown notice not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if shutdown.status == 'lifted':
+            return Response(
+                {'detail': 'This shutdown has already been lifted. No response needed.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if shutdown.operator_response:
+            return Response(
+                {
+                    'detail': 'You have already submitted a response to this shutdown notice.',
+                    'responded_at': shutdown.operator_responded_at,
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        response_text = request.data.get('response', '').strip()
+        if not response_text:
+            return Response(
+                {'detail': 'A written response is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        shutdown.operator_response     = response_text
+        shutdown.operator_responded_at = timezone.now()
+        shutdown.save()
+
+        # Notify all ISCOOA executives
+        exco_users = User.objects.filter(
+            role        = 'is',
+            association = request.user.association,
+            is_active   = True,
+        )
+        send_bulk_notification(
+            users      = exco_users,
+            category   = 'general',
+            title      = f'Shutdown Response — {shutdown.shutdown_ref}',
+            message    = (
+                f'Operator {request.user.full_name or request.user.email} '
+                f'has submitted a response to shutdown notice {shutdown.shutdown_ref}: '
+                f'"{response_text[:120]}"'
+            ),
+            related_id = str(shutdown.id),
+        )
+
+        return Response({
+            'detail':       'Your response has been submitted to ISCOOA.',
+            'shutdown_ref':   shutdown.shutdown_ref,
+            'response':     response_text,
+            'responded_at': shutdown.operator_responded_at,
+        })
+
+
+@extend_schema(tags=['Enforcement'])
+class AcknowledgePenaltyResponseView(APIView):
+    """
+    POST /api/v1/enforcement/all-penalties/<id>/acknowledge-response/
+    Executive reviews operator response and takes action.
+    action: "waive"  → status = waived, fine cancelled
+    action: "uphold" → status = disputed, fine remains payable
+    Once actioned the penalty is locked — no further actions.
+    """
+    permission_classes = [IsIscooaExec]
+
+    def post(self, request, pk):
+        try:
+            penalty = Penalty.objects.get(
+                pk                    = pk,
+                operator__association = request.user.association,
+            )
+        except Penalty.DoesNotExist:
+            return Response(
+                {'detail': 'Penalty not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # ── Lock check — correct field names ──────────────────────────
+        if penalty.status == 'waived':
+            return Response(
+                {
+                    'detail': (
+                        f'This penalty has already been waived. '
+                        f'Reason: {penalty.waiver_reason or "No reason recorded"}.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if penalty.status == 'disputed':
+            return Response(
+                {'detail': 'This penalty has already been upheld and is locked.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if penalty.status == 'paid':
+            return Response(
+                {'detail': 'This penalty fine has already been paid. No further action needed.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Response check ─────────────────────────────────────────────
+        if not penalty.operator_response:
+            return Response(
+                {'detail': 'Operator has not submitted a response yet.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── Validate input ─────────────────────────────────────────────
+        action = request.data.get('action', '').lower().strip()
+        note   = request.data.get('note', '').strip()
+
+        if action not in ['uphold', 'waive']:
+            return Response(
+                {'detail': 'action must be either "uphold" or "waive".'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not note:
+            return Response(
+                {'detail': 'A note is required for both uphold and waive actions.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        from notifications.utils import send_notification
+
+        if action == 'waive':
+            # ── Waive the penalty ──────────────────────────────────────
+            penalty.status        = 'waived'          # ← correct field
+            penalty.waiver_reason = note              # ← correct field
+            penalty.waived_by     = request.user
+            penalty.waived_at     = timezone.now()
+            penalty.save()
+
+            send_notification(
+                user       = penalty.operator,
+                category   = 'general',
+                title      = f'Penalty Waived — {penalty.penalty_ref}',
+                message    = (
+                    f'After reviewing your response, ISCOOA has waived '
+                    f'penalty {penalty.penalty_ref}. '
+                    f'Note: {note}'
+                ),
+                related_id = str(penalty.id),
+            )
+
+            return Response({
+                'detail':        'Penalty waived successfully.',
+                'penalty_ref':   penalty.penalty_ref,
+                'status':        penalty.status,
+                'waiver_reason': penalty.waiver_reason,
+                'waived_by':     request.user.full_name,
+                'waived_at':     penalty.waived_at,
+            })
+
+        else:
+            # ── Uphold the penalty ─────────────────────────────────────
+            penalty.status        = 'disputed'        # ← locks the penalty
+            penalty.waiver_reason = f'[Upheld] {note}'
+            penalty.save()
+
+            send_notification(
+                user       = penalty.operator,
+                category   = 'general',
+                title      = f'Penalty Upheld — {penalty.penalty_ref}',
+                message    = (
+                    f'ISCOOA has reviewed your response and upheld '
+                    f'penalty {penalty.penalty_ref}. '
+                    f'Note: {note}. '
+                    + (
+                        f'Fine of ₦{penalty.amount/100:,.2f} remains payable.'
+                        if penalty.amount and not penalty.fine_paid
+                        else ''
+                    )
+                ),
+                related_id = str(penalty.id),
+            )
+
+            return Response({
+                'detail':            'Penalty upheld. Operator has been notified.',
+                'penalty_ref':       penalty.penalty_ref,
+                'status':            penalty.status,
+                'uphold_note':       note,
+                'upheld_by':         request.user.full_name,
+                'fine_still_payable': (
+                    penalty.amount > 0 and not penalty.fine_paid
+                    if penalty.amount else False
+                ),
+            })

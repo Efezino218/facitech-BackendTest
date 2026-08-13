@@ -44,6 +44,7 @@ class SubmitReportView(APIView):
             category    = serializer.validated_data['category'],
             narrative   = serializer.validated_data['narrative'],
             association = request.user.association,
+            submitted_by = request.user,
         )
 
         # Notify President and Legal Adviser only
@@ -67,15 +68,21 @@ class SubmitReportView(APIView):
             related_id = str(report.id),
         )
 
-        return Response(
-            {
-                'detail':     'Your report has been submitted anonymously. Your identity has not been recorded.',
-                'report_ref': report.report_ref,
-                'category':   report.get_category_display(),
-                'status':     report.status,
-            },
-            status=status.HTTP_201_CREATED
-        )
+        return Response({
+            'detail': (
+                'Your report has been submitted anonymously. '
+                'Your identity has not been recorded in the report. '
+                'You will be notified when ISCOOA updates the status of your report.'
+            ),
+            'report_ref': report.report_ref,
+            'category':   report.get_category_display(),
+            'status':     report.status,
+            'note': (
+                'Keep your reference number for your records. '
+                'You will receive in-app notifications when the status changes. '
+                'Your identity remains confidential — executives only see the report content.'
+            ),
+        }, status=status.HTTP_201_CREATED)
 
 
 # ─── PRESIDENT AND LEGAL ADVISER VIEWS ───────────────────────────────────────
@@ -168,6 +175,44 @@ class RespondToReportView(APIView):
 
             report.save()
 
+
+            # Update timeline
+            WhistleblowerUpdate.objects.create(
+                report=report,
+                updated_by=request.user,  # ✅ CORRECT
+                old_status=old_status,    # ✅ CORRECT
+                new_status=new_status,    # ✅ CORRECT
+                note=note or response,    # ✅ CORRECT
+            )
+
+            # ── Notify the operator who submitted the report ───────────────
+            # We can notify them because we stored submitted_by
+            # while keeping the report anonymous from the executives
+            try:
+                if report.submitted_by:
+                    status_labels = {
+                        'open':         'received and is now open for review',
+                        'under_review': 'currently under review by ISCOOA',
+                        'investigating': 'under active investigation',
+                        'resolved':     'resolved by ISCOOA',
+                        'closed':       'closed',
+                    }
+                    status_label = status_labels.get(new_status, new_status)
+
+                    send_notification(
+                        user       = report.submitted_by,
+                        category   = 'general',
+                        title      = f'Report Update — {report.report_ref}',
+                        message    = (
+                            f'Your anonymous report ({report.report_ref}) '
+                            f'has been {status_label}. '
+                            f'{f"Update: {response[:100]}" if response else ""}'
+                        ),
+                        related_id = str(report.id),
+                    )
+            except Exception:
+                pass  # Never fail the response because notification failed
+
             WhistleblowerUpdate.objects.create(
                 report     = report,
                 updated_by = request.user,
@@ -213,6 +258,22 @@ class ArchiveReportView(APIView):
         old_status     = report.status
         report.status  = WhistleblowerReport.Status.ARCHIVED
         report.save()
+
+                # Notify submitter report is closed
+        try:
+            if report.submitted_by:
+                send_notification(
+                    user       = report.submitted_by,
+                    category   = 'general',
+                    title      = f'Report Closed — {report.report_ref}',
+                    message    = (
+                        f'Your anonymous report ({report.report_ref}) '
+                        f'has been closed by ISCOOA.'
+                    ),
+                    related_id = str(report.id),
+                )
+        except Exception:
+            pass
 
         WhistleblowerUpdate.objects.create(
             report     = report,
