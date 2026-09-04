@@ -16,17 +16,21 @@ UPLOAD_ALLOWED_STATUSES = ['submitted', 'docs_requested', 'rejected']
 # not_started means no application yet so we handle that separately
 
 
+# ─── UPDATE THIS FUNCTION AT THE TOP OF YOUR FILE ─────────────────────────────
 def delete_old_file(file_field):
     """
-    Deletes the old file from disk when a new one is uploaded.
-    Safely handles cases where the file does not exist.
+    Deletes the old file safely from either disk or cloud storage 
+    when a new one is uploaded. Works with both local files and Supabase buckets.
     """
-    if file_field and hasattr(file_field, 'path'):
+    if file_field and file_field.name:
         try:
-            if os.path.isfile(file_field.path):
-                os.remove(file_field.path)
-        except Exception:
-            # Never crash the upload because of a cleanup failure
+            # Use Django's built-in abstract storage engine interface
+            if file_field.storage.exists(file_field.name):
+                file_field.storage.delete(file_field.name)
+            print(f"🗑️ Cleaned up old file from storage: {file_field.name}")
+        except Exception as e:
+            # Never crash the new upload because an old file failed to delete
+            print(f"⚠️ Non-breaking cleanup error: {str(e)}")
             pass
 
 

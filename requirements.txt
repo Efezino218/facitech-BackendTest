@@ -1,5 +1,7 @@
 asgiref==3.11.1
 attrs==26.1.0
+boto3==1.43.83
+botocore==1.43.83
 certifi==2026.6.17
 charset-normalizer==3.4.9
 dj-database-url==3.1.2
@@ -7,12 +9,14 @@ Django==6.0.4
 django-axes==8.3.1
 django-cors-headers==4.9.0
 django-ratelimit==4.1.0
+django-storages==1.14.6
 djangorestframework==3.17.1
 djangorestframework_simplejwt==5.5.1
 drf-spectacular==0.29.0
 gunicorn==26.0.0
 idna==3.18
 inflection==0.5.1
+jmespath==1.1.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 packaging==26.2
@@ -25,6 +29,7 @@ PyYAML==6.0.3
 referencing==0.37.0
 requests==2.34.2
 rpds-py==2026.5.1
+s3transfer==0.19.2
 six==1.17.0
 sqlparse==0.5.5
 tzdata==2026.2

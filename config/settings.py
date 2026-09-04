@@ -360,12 +360,63 @@ USE_I18N = True
 USE_TZ = True
 
 
-# ─── STATIC & MEDIA FILES ─────────────────────────────────────────────────────
-STATIC_URL  = '/static/'
+# ─── STATIC FILES CONFIGURATION ──────────────────────────────────────────────
+# Django requires these regardless of whether you use cloud storage or local disk
+STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-MEDIA_URL  = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+# ─── FILE STORAGE ─────────────────────────────────────────────────────────────
+USE_CLOUD_STORAGE = os.getenv('USE_CLOUD_STORAGE', 'False') == 'True'
+
+if USE_CLOUD_STORAGE:
+    # ── Supabase Storage (S3-compatible) ──────────────────────────────
+    AWS_ACCESS_KEY_ID       = os.getenv('SUPABASE_ACCESS_KEY_ID')
+    AWS_SECRET_ACCESS_KEY   = os.getenv('SUPABASE_SECRET_ACCESS_KEY')
+    AWS_STORAGE_BUCKET_NAME = os.getenv('SUPABASE_STORAGE_BUCKET', 'facitech-media')
+    AWS_S3_REGION_NAME      = os.getenv('SUPABASE_S3_REGION', 'us-east-1')
+    AWS_S3_ENDPOINT_URL     = os.getenv('SUPABASE_S3_ENDPOINT')
+
+    # CRITICAL: Forces django-storages to communicate correctly with Supabase
+    AWS_S3_SIGNATURE_VERSION = 's3v4'
+    AWS_S3_ADDRESSING_STYLE  = 'path'
+    AWS_DEFAULT_ACL          = None  # Supabase doesn't support S3 Object ACLs
+    AWS_S3_FILE_OVERWRITE    = False
+    AWS_QUERYSTRING_AUTH     = False # Disables S3 query signatures for public assets
+
+    # Modern Django 4.2+ Storage Routing Layout
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
+
+    # Public URLs must target Supabase's native REST wrapper, NOT the S3 API Gateway
+    PROJECT_ID = "nopnqomivvhljmxycoid"
+
+    # ⬇⬇⬇ THIS IS THE NEW LINE — it's the only thing missing from your file.
+    # Without it, django-storages ignores MEDIA_URL below and builds file.url
+    # from AWS_S3_ENDPOINT_URL instead (the /storage/v1/s3/... signing endpoint),
+    # which is why you're getting "Missing signature" / 403 errors.
+    AWS_S3_CUSTOM_DOMAIN = f"{PROJECT_ID}.supabase.co/storage/v1/object/public/{AWS_STORAGE_BUCKET_NAME}"
+
+    MEDIA_URL = f"https://{PROJECT_ID}.supabase.co/storage/v1/object/public/{AWS_STORAGE_BUCKET_NAME}/"
+    MEDIA_ROOT = ''
+
+else:
+    # ── Local filesystem (development only) ────────────────────────────
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
+    MEDIA_URL  = '/media/'
+    MEDIA_ROOT = BASE_DIR / 'media'
 
 # ─── FILE UPLOAD SETTINGS ─────────────────────────────────────────────────────
 # Maximum upload size: 5MB as per the brief

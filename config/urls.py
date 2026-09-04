@@ -42,4 +42,6 @@ urlpatterns = [
     path('api/v1/associations/', include('associations.urls')),
 ]
 
-urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# Only serve media files locally — in production they come from Supabase Storage
+if not settings.USE_CLOUD_STORAGE:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
