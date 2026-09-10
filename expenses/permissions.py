@@ -18,25 +18,8 @@ class IsTreasurer(BasePermission):
         )
 
 
-class IsSecretaryGeneral(BasePermission):
-    def has_permission(self, request, view):
-        return (
-            request.user.is_authenticated and
-            request.user.role == 'is' and
-            request.user.ipos == 'secretary_general'
-        )
-
-
-class IsPresident(BasePermission):
-    def has_permission(self, request, view):
-        return (
-            request.user.is_authenticated and
-            request.user.role == 'is' and
-            request.user.ipos == 'president'
-        )
-
-
 class IsBOTMember(BasePermission):
+    """Any BOT member — can VIEW but not act."""
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and
@@ -44,10 +27,14 @@ class IsBOTMember(BasePermission):
         )
 
 
-class IsTreasurerOrPresident(BasePermission):
+class IsBOTChairman(BasePermission):
+    """
+    BOT Chairman only — can ratify, defer or reject.
+    Uses ipos field to identify chairman.
+    """
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and
-            request.user.role == 'is' and
-            request.user.ipos in ['treasurer', 'president']
+            request.user.role == 'bot' and
+            request.user.ipos == 'chairman'
         )

@@ -79,9 +79,11 @@ class ExpenseCreateSerializer(serializers.ModelSerializer):
 
 
 class ExpenseListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for listing expenses."""
     raised_by_name   = serializers.CharField(
         source='raised_by.full_name', read_only=True
+    )
+    paid_by_name     = serializers.CharField(
+        source='paid_by.full_name', read_only=True
     )
     amount_naira     = serializers.ReadOnlyField()
     category_display = serializers.CharField(
@@ -100,6 +102,7 @@ class ExpenseListSerializer(serializers.ModelSerializer):
             'status', 'status_display',
             'raised_by_name', 'requires_bot',
             'raised_date', 'created_at',
+            'paid_by_name', 'paid_at', 'payment_ref', 'payment_evidence',  # ← ADD THESE
         ]
 
 

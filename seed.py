@@ -89,6 +89,7 @@ bot_chairman = User.objects.create_user(
     first_name  = 'Rotimi',
     last_name   = 'Adeyemi',
     role        = 'bot',
+    ipos        = 'chairman',
     association = association,
 )
 

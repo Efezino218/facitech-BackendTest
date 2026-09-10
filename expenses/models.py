@@ -20,12 +20,13 @@ class ExpenseCategory(models.TextChoices):
 
 class ExpenseStatus(models.TextChoices):
     PENDING_TREASURER  = 'pending_treasurer',  'Pending Treasurer Approval'
-    PENDING_SECRETARY  = 'pending_secretary',  'Pending Secretary General Approval'
+    PENDING_SECRETARY  = 'pending_secretary',  'Pending Secretary Approval'
     PENDING_PRESIDENT  = 'pending_president',  'Pending President Approval'
     PENDING_BOT        = 'pending_bot',        'Pending BOT Ratification'
     APPROVED           = 'approved',           'Approved'
-    PAID               = 'paid',               'Paid'
+    DEFERRED           = 'deferred',           'Deferred to Next Meeting'
     REJECTED           = 'rejected',           'Rejected'
+    PAID               = 'paid',               'Paid'
 
 
 class Expense(models.Model):
@@ -81,6 +82,31 @@ class Expense(models.Model):
 
     # Whether this expense requires BOT ratification
     requires_bot    = models.BooleanField(default=False)
+
+        # BOT resolution
+    bot_resolution_note = models.TextField(blank=True)
+    bot_actioned_by     = models.ForeignKey(
+                            'accounts.User',
+                            on_delete=models.SET_NULL,
+                            null=True, blank=True,
+                            related_name='bot_actioned_expenses',
+                          )
+    bot_actioned_at     = models.DateTimeField(null=True, blank=True)
+
+    # Payment evidence
+    payment_ref         = models.CharField(max_length=100, blank=True)
+    payment_evidence    = models.FileField(
+                            upload_to='expenses/evidence/',
+                            null=True, blank=True
+                          )
+    paid_by             = models.ForeignKey(
+                            'accounts.User',
+                            on_delete=models.SET_NULL,
+                            null=True, blank=True,
+                            related_name='paid_expenses',
+                          )
+    paid_at             = models.DateTimeField(null=True, blank=True)
+
 
     # Payment tracking
     paid_at         = models.DateTimeField(null=True, blank=True)

@@ -20,6 +20,7 @@ class ExcoPosition(models.TextChoices):
     TREASURER         = 'treasurer',         'Treasurer'
     LEGAL_ADVISER     = 'legal_adviser',     'Legal Adviser'
     PRO               = 'pro',               'Public Relations Officer'
+    CHAIRMAN          = 'chairman',          'BOT Chairman'
     NONE              = 'none',              'None'
 
 
